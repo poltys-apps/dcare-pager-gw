@@ -3,11 +3,20 @@ package com.poltys.dcarepager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioAttributes
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Binder
 import android.os.IBinder
+import android.os.PowerManager
+import android.system.ErrnoException
+import android.system.OsConstants
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
@@ -16,18 +25,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
@@ -64,19 +76,58 @@ class UdpListenerService : Service() {
 
     private val _alarmIds = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarmIds.asStateFlow()
+    private var registerTime: Instant? = null
+    var lastSocketOsError: Int? = null
 
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            super.onAvailable(network)
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val capabilities = connectivityManager.getNetworkCapabilities(network)
+            val isWifi = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            AppLog.add("Network available. Is Wi-Fi: $isWifi")
+            if (connectionJob?.isActive != true && destinationAddress.isNotBlank()) {
+                Log.i("UdpListenerService", "Network became available. Ensuring connection is active.")
+                connectionJob?.cancel()
+                connectionJob = launchSocketConnection()
+            }
+        }
+
+        override fun onLost(network: Network) {
+            super.onLost(network)
+            AppLog.add("Network lost.")
+        }
+    }
+
+    private val dozeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED) {
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                val isIdle = powerManager.isDeviceIdleMode
+                Log.i("UdpListenerService", "Doze mode changed. Idle: $isIdle")
+                AppLog.add("Doze mode changed. Idle: $isIdle")
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
         settingsDataStore = SettingsDataStore(this)
         RegistrationAlarmReceiver.schedule(this)
+
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
+
+        val dozeFilter = IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+        registerReceiver(dozeReceiver, dozeFilter)
+
         serviceScope.launch {
             settingsDataStore.destinationAddressFlow.collect { address ->
                 if (address.isNotBlank() && address != destinationAddress) {
                     destinationAddress = address
-                    connectionJob?.cancel() // Cancel previous job
-                    connectionJob = launchSocketConnection(true)
+                    connectionJob?.cancel()
+                    connectionJob = launchSocketConnection()
                 } else if (address.isBlank()) {
                     connectionJob?.cancel()
                 }
@@ -84,56 +135,84 @@ class UdpListenerService : Service() {
         }
     }
 
-    private fun launchSocketConnection(addressChanged: Boolean = false) = serviceScope.launch(Dispatchers.IO) {
-        // This coroutine owns the socket. It will be cancelled when the address changes.
-        try {
-            // Ensure any old socket is closed before creating a new one.
-            if (addressChanged || datagramSocket == null || !datagramSocket!!.isConnected) {
-                datagramSocket?.close()
-                datagramSocket = DatagramSocket()
-                datagramSocket!!.connect(InetSocketAddress(destinationAddress, 18806))
-                Log.d("UdpListenerService", "Started new socket connection to $destinationAddress")
-            }
+    private fun launchSocketConnection() = serviceScope.launch(Dispatchers.IO) {
+        Log.d("UdpListenerService", "launchSocketConnection called.")
 
-            // Send an initial registration message
-            localSeqNo += 1
-            sendMessage("{\"Register\":$localSeqNo}")
-            Log.d("UdpListenerService", "Sent registration message.")
-
-            // Loop to receive packets. This will suspend the coroutine until a packet arrives.
-            while (isActive) {
-                val packet = DatagramPacket(buffer, buffer.size)
-                datagramSocket?.receive(packet) // This is a blocking (suspending) call
-                withContext(Dispatchers.Main) {
-                    processPacket(packet)
+        while (isActive) {
+            try {
+                if (datagramSocket == null || datagramSocket!!.isClosed) {
+                    datagramSocket = DatagramSocket()
+                    datagramSocket?.soTimeout = 15000
+                    datagramSocket!!.connect(InetSocketAddress(destinationAddress, 18806))
+                    Log.i("UdpListenerService", "Socket connected to $destinationAddress")
                 }
-            }
-        } catch (e: SocketException) {
-            // A SocketException is expected when the socket is closed, e.g., during cancellation.
-            if (isActive) {
-                Log.e("UdpListenerService", "Socket error", e)
-            }
-        } catch (e: Exception) {
-            if (e !is kotlinx.coroutines.CancellationException) {
-                Log.e("UdpListenerService", "Connection coroutine failed", e)
+
+                if (registerTime == null || registerTime!!.isBefore(Instant.now().minusSeconds(30))) {
+                    registerTime = Instant.now()
+                    Log.i("UdpListenerService", "Sending register and logs")
+                    localSeqNo += 1
+                    sendMessage("""{"Register":$localSeqNo}""")
+
+                    val logs = AppLog.getAndClear()
+                    if (logs.isNotEmpty()) {
+                        val logJson = JSONObject()
+                        logJson.put("Logs", JSONArray(logs))
+                        sendMessage(logJson.toString())
+                    }
+                }
+
+                val packet = DatagramPacket(buffer, buffer.size)
+                datagramSocket?.receive(packet)
+                processPacket(packet)
+            } catch (e: SocketTimeoutException) {
+                Log.d("UdpListenerService", "SocketTimeoutException: ${e.message}")
+                // ignore
+            } catch (e: SocketException) {
+                val cause = e.cause
+                var osError = "N/A"
+                if (cause is ErrnoException) {
+                    if (cause.errno != lastSocketOsError) {
+                        lastSocketOsError = cause.errno
+                        osError = cause.errno.toString()
+                        val logMsg = "SocketException: ${e.message} OsError:$osError. Reconnecting in 10s."
+                        AppLog.add(logMsg)
+                        Log.w("UdpListenerService", logMsg)
+                    }
+                }
+                else {
+                    val logMsg = "SocketException: ${e.message}. Reconnecting in 10s."
+                    AppLog.add(logMsg)
+                    Log.w("UdpListenerService", logMsg)
+                }
+                datagramSocket?.close()
+                datagramSocket = null
+                delay(10_000)
+            } catch (e: IOException) {
+                AppLog.add("IOException: ${e.message}. Reconnecting in 10s.")
+                Log.w("UdpListenerService", "IOException: ${e.message}. Reconnecting in 10s.")
+                datagramSocket?.close()
+                datagramSocket = null
+                delay(10_000)
+            } catch (e: Exception) {
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    AppLog.add("Coroutine loop failed: ${e.message}. Retrying in 10s.")
+                    Log.e("UdpListenerService", "Connection coroutine failed", e)
+                    datagramSocket?.close()
+                    datagramSocket = null
+                    delay(10_000)
+                }
             }
         }
     }
 
-    private fun sendMessage(message: String) {
-        // Launch in a separate coroutine to avoid blocking the caller
-        serviceScope.launch(Dispatchers.IO) {
-            if (datagramSocket?.isConnected == true) {
-                try {
-                    val data = message.toByteArray()
-                    val packet = DatagramPacket(data, data.size, InetSocketAddress(destinationAddress, 18806))
-                    datagramSocket?.send(packet)
-                } catch (e: Exception) {
-                    Log.e("UdpListenerService", "Error sending message", e)
-                }
-            } else {
-                Log.w("UdpListenerService", "SendMessage called but socket is not connected.")
-            }
+    private suspend fun sendMessage(message: String) {
+        if (datagramSocket?.isConnected == true) {
+            val data = message.toByteArray()
+            val packet = DatagramPacket(data, data.size, InetSocketAddress(destinationAddress, 18806))
+            datagramSocket?.send(packet)
+        } else {
+            Log.w("UdpListenerService", "SendMessage called but socket is not connected.")
+            throw SocketException("Socket is not connected.") // This will trigger the reconnect logic
         }
     }
 
@@ -150,7 +229,7 @@ class UdpListenerService : Service() {
         }
     }
 
-    fun processPacket(packet: DatagramPacket) {
+    private suspend fun processPacket(packet: DatagramPacket) {
         val jsonString = String(packet.data, 0, packet.length)
         try {
             val jsonObject = JSONObject(jsonString)
@@ -158,7 +237,7 @@ class UdpListenerService : Service() {
             if (jsonObject.has("Alert")) {
                 val alertData = jsonObject.getJSONObject("Alert")
                 val seqNo = alertData.optInt("seq_no", 0)
-                sendMessage("{\"Ack\":$seqNo}")
+                sendMessage("""{"Ack":$seqNo}""" )
 
                 val armed = alertData.optBoolean("armed", false)
                 val alarmIdStr = alertData.optString("id", "0")
@@ -228,16 +307,12 @@ class UdpListenerService : Service() {
 
         startForeground(1, notification)
 
-        // If the service is started by the alarm, restart the connection.
-        // This acts as a watchdog to ensure the connection is always active.
         if (intent?.action == ACTION_SEND_REGISTRATION) {
             if (destinationAddress.isNotBlank()) {
                 // Cancel any existing job and start a new one. This will re-bind the socket and send a new registration message.
                 Log.d("UdpListenerService", "Alarm triggered. Restarting UDP coroutine.")
                 connectionJob?.cancel()
                 connectionJob = launchSocketConnection()
-            } else {
-                Log.w("UdpListenerService", "Alarm triggered but destination address is blank. Cannot connect.")
             }
         }
 
@@ -246,6 +321,9 @@ class UdpListenerService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivityManager.unregisterNetworkCallback(networkCallback)
+        unregisterReceiver(dozeReceiver)
         RegistrationAlarmReceiver.cancel(this)
         serviceScope.cancel()
         Log.d("UdpListenerService", "UdpListenerService destroyed.")
