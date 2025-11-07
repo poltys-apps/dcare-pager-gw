@@ -17,6 +17,7 @@ class SettingsDataStore(context: Context) {
 
     object PreferencesKeys {
         val DESTINATION_ADDRESS = stringPreferencesKey("destination_address")
+        val FRIENDLY_NAME = stringPreferencesKey("friendly_name")
     }
 
     val destinationAddressFlow: Flow<String> = dataStore.data
@@ -27,6 +28,17 @@ class SettingsDataStore(context: Context) {
     suspend fun saveDestinationAddress(destinationAddress: String) {
         dataStore.edit {
             it[PreferencesKeys.DESTINATION_ADDRESS] = destinationAddress
+        }
+    }
+
+    val friendlyNameFlow: Flow<String> = dataStore.data
+        .map {
+            it[PreferencesKeys.FRIENDLY_NAME] ?: ""
+        }
+
+    suspend fun saveFriendlyName(friendlyName: String) {
+        dataStore.edit {
+            it[PreferencesKeys.FRIENDLY_NAME] = friendlyName
         }
     }
 }

@@ -112,7 +112,7 @@ class MainActivity : ComponentActivity() {
                         MainScreen(navController = navController, viewModel = mainViewModel)
                     }
                     composable("settings") {
-                        SettingsScreen(settingsDataStore = settingsDataStore)
+                        SettingsScreen(navController = navController, settingsDataStore = settingsDataStore)
                     }
                 }
             }
@@ -164,7 +164,7 @@ fun MainScreen(navController: NavController, viewModel: MainViewModel) {
 fun priorityToColor(priority: Int): Color {
     return when (priority) {
         1 -> Color.Red
-        2 or 3 -> Color.Yellow
+        2, 3 -> Color.Yellow
         else -> Color.Transparent
     }
 }

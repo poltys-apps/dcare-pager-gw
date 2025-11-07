@@ -3,4 +3,5 @@
     <string name="dcc_proxy_address">DCC Proxy Address</string>
     <string name="udp_listener_content_title">DCare Pager Notifications</string>
     <string name="udp_listener_content_text">Listening for DCare notifications</string>
+    <string name="friendly_name">Friendly Name of this Phone</string>
 </resources>

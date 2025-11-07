@@ -78,6 +78,8 @@ class UdpListenerService : Service() {
     val alarms: StateFlow<Map<Int, AlertData>> = _alarmIds.asStateFlow()
     private var registerTime: Instant? = null
     var lastSocketOsError: Int? = null
+    private var friendlyName: String = ""
+
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -122,6 +124,7 @@ class UdpListenerService : Service() {
         val dozeFilter = IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
         registerReceiver(dozeReceiver, dozeFilter)
 
+        // Launch a separate coroutine for each flow to ensure they are collected concurrently
         serviceScope.launch {
             settingsDataStore.destinationAddressFlow.collect { address ->
                 if (address.isNotBlank() && address != destinationAddress) {
@@ -130,6 +133,15 @@ class UdpListenerService : Service() {
                     connectionJob = launchSocketConnection()
                 } else if (address.isBlank()) {
                     connectionJob?.cancel()
+                }
+            }
+        }
+
+        serviceScope.launch {
+            settingsDataStore.friendlyNameFlow.collect { newFriendlyName ->
+                if (newFriendlyName.isNotBlank() && newFriendlyName != friendlyName) {
+                    AppLog.add("Friendly name changed to: $newFriendlyName")
+                    friendlyName = newFriendlyName
                 }
             }
         }
@@ -151,7 +163,7 @@ class UdpListenerService : Service() {
                     registerTime = Instant.now()
                     Log.i("UdpListenerService", "Sending register and logs")
                     localSeqNo += 1
-                    sendMessage("""{"Register":$localSeqNo}""")
+                    sendMessage("""{"Register":{"seq_no":$localSeqNo,"FriendlyName":"$friendlyName"}}""")
 
                     val logs = AppLog.getAndClear()
                     if (logs.isNotEmpty()) {
