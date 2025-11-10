@@ -11,12 +11,10 @@ import android.media.AudioAttributes
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.Uri
 import android.os.Binder
 import android.os.IBinder
 import android.os.PowerManager
 import android.system.ErrnoException
-import android.system.OsConstants
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
@@ -79,6 +77,7 @@ class UdpListenerService : Service() {
     private var registerTime: Instant? = null
     var lastSocketOsError: Int? = null
     private var friendlyName: String = ""
+    private var initializing = true
 
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -148,8 +147,6 @@ class UdpListenerService : Service() {
     }
 
     private fun launchSocketConnection() = serviceScope.launch(Dispatchers.IO) {
-        Log.d("UdpListenerService", "launchSocketConnection called.")
-
         while (isActive) {
             try {
                 if (datagramSocket == null || datagramSocket!!.isClosed) {
@@ -161,16 +158,17 @@ class UdpListenerService : Service() {
 
                 if (registerTime == null || registerTime!!.isBefore(Instant.now().minusSeconds(30))) {
                     registerTime = Instant.now()
-                    Log.i("UdpListenerService", "Sending register and logs")
+                    Log.v("UdpListenerService", "Sending register and logs")
                     localSeqNo += 1
-                    sendMessage("""{"Register":{"seq_no":$localSeqNo,"FriendlyName":"$friendlyName"}}""")
+                    sendMessage("""{"Register":{"seq_no":$localSeqNo,"friendly_name":"$friendlyName"}}""")
 
                     val logs = AppLog.getAndClear()
-                    if (logs.isNotEmpty()) {
+                    if (!initializing && logs.isNotEmpty()) {
                         val logJson = JSONObject()
                         logJson.put("Logs", JSONArray(logs))
                         sendMessage(logJson.toString())
                     }
+                    initializing = false
                 }
 
                 val packet = DatagramPacket(buffer, buffer.size)
@@ -245,68 +243,158 @@ class UdpListenerService : Service() {
         val jsonString = String(packet.data, 0, packet.length)
         try {
             val jsonObject = JSONObject(jsonString)
-            Log.d("UdpListenerService", "Received JSON: $jsonObject")
             if (jsonObject.has("Alert")) {
                 val alertData = jsonObject.getJSONObject("Alert")
+                Log.d("UdpListenerService", "Received Alert JSON: $alertData")
                 val seqNo = alertData.optInt("seq_no", 0)
                 sendMessage("""{"Ack":$seqNo}""" )
+                processAlertData(alertData)
+            } else if (jsonObject.has("Notifies")) {
+                val notifies = jsonObject.getJSONArray("Notifies")
+                Log.d("UdpListenerService", "Received Notifies JSON: $notifies")
+                val armedAlerts: MutableMap<Int, JSONObject> = mutableMapOf()
+                for (i in 0 until notifies.length()) {
+                    val notify = notifies.getJSONObject(i)
+                    if (notify.has("Alert")) {
+                        val alertData = notify.getJSONObject("Alert")
+                        val seqNo = alertData.optInt("seq_no", 0)
+                        sendMessage("""{"Ack":$seqNo}""")
 
-                val armed = alertData.optBoolean("armed", false)
-                val alarmIdStr = alertData.optString("id", "0")
-                val alarmId = (alarmIdStr.toULongOrNull() ?: 0UL).toInt()
-                val hasSubId = alertData.optBoolean("has_sub_id", false)
+                        val armed = alertData.optBoolean("armed", false)
+                        val alarmIdStr = alertData.optString("id", "0")
+                        val alarmId = (alarmIdStr.toULongOrNull() ?: 0UL).toInt()
 
+                        if (armed) {
+                            armedAlerts[alarmId] = alertData
+                        } else {
+                            val hasSubId = alertData.optBoolean("has_sub_id", false)
+                            val reset = alertData.optBoolean("reset", false)
+                            val iterator = armedAlerts.iterator()
+                            var found = false
 
-                val notificationManager =
-                    getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                if (armed) {
-                    val sender = alertData.optString("device_name", "") + " " + jsonObject.optString("resident", "")
-                    val message = alertData.optString("subject", "")
-                    val priority = alertData.optInt("priority", 4) // 4 = Normal
-                    val timestampStr = alertData.optString("timestamp")
-                    val timestamp = parseTimestamp(timestampStr)
-
-                    Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] Sender: $sender, Message: $message, seqNo: $seqNo")
-
-                    val notification = NotificationCompat.Builder(this, EMERGENCY_CHANNEL_ID)
-                        .setContentTitle(sender)
-                        .setContentText(message)
-                        .setSmallIcon(R.mipmap.ic_launcher)
-                        .build()
-                    val newAlarms = _alarmIds.value.toMutableMap()
-                    newAlarms[alarmId] = AlertData().apply {
-                        this.sender = sender
-                        this.message = message
-                        this.priority = priority
-                        this.timestamp = timestamp
-                    }
-                    _alarmIds.value = newAlarms
-
-                    notificationManager.notify(alarmId, notification)
-                } else {
-                    val reset = alertData.optBoolean("reset", false)
-                    Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET:$reset seqNo: $seqNo")
-                    if (reset && hasSubId) {
-                        val newAlarms = _alarmIds.value.toMutableMap()
-                        val iterator = newAlarms.iterator()
-                        while (iterator.hasNext()) {
-                            val (notifiedId, _) = iterator.next()
-                            if (notifiedId / 10 == alarmId / 10) {
-                                notificationManager.cancel(notifiedId)
-                                iterator.remove()
+                            while (iterator.hasNext()) {
+                                val (oldAlarmId, _) = iterator.next()
+                                if (reset && hasSubId) {
+                                    if (oldAlarmId / 10 == alarmId / 10) {
+                                        Log.d(
+                                            "UdpListenerService",
+                                            "Retransmit: Ignore reset alarm $oldAlarmId"
+                                        )
+                                        iterator.remove()
+                                        found = true
+                                    }
+                                } else {
+                                    val extraIds = alertData.optJSONArray("extra_ids")
+                                    if (extraIds != null) {
+                                        for (j in 0 until extraIds.length()) {
+                                            if (extraIds.getInt(j) == oldAlarmId) {
+                                                Log.d(
+                                                    "UdpListenerService",
+                                                    "Retransmit: Ignore extra_id alarm $oldAlarmId"
+                                                )
+                                                iterator.remove()
+                                                found = true
+                                                break
+                                            }
+                                        }
+                                    }
+                                    if (oldAlarmId == alarmId) {
+                                        Log.d(
+                                            "UdpListenerService",
+                                            "Retransmit: Ignore cleared alarm $oldAlarmId"
+                                        )
+                                        iterator.remove()
+                                        found = true
+                                    }
+                                }
+                            }
+                            if (!found) {
+                                processAlertData(alertData)
                             }
                         }
-                        _alarmIds.value = newAlarms
-                    } else {
-                        val newAlarms = _alarmIds.value.toMutableMap()
-                        newAlarms.remove(alarmId)
-                        _alarmIds.value = newAlarms
-                        notificationManager.cancel(alarmId)
                     }
                 }
+                // process active alarms
+                for ((_, alarmData) in armedAlerts) {
+                    processAlertData(alarmData)
+                }
+            } else {
+                Log.v("UdpListenerService", "Received JSON: $jsonString")
             }
         } catch (e: JSONException) {
             Log.e("UdpListenerService", "Error parsing JSON", e)
+        }
+    }
+
+    private fun processAlertData(
+        alertData: JSONObject
+    ) {
+        val seqNo = alertData.optInt("seq_no", 0)
+        val armed = alertData.optBoolean("armed", false)
+        val alarmIdStr = alertData.optString("id", "0")
+        val alarmId = (alarmIdStr.toULongOrNull() ?: 0UL).toInt()
+        val hasSubId = alertData.optBoolean("has_sub_id", false)
+
+        val notificationManager =
+            getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        if (armed) {
+            val sender =
+                alertData.optString("device_name", "") + " " + alertData.optString("resident", "")
+            val message = alertData.optString("subject", "")
+            val priority = alertData.optInt("priority", 4) // 4 = Normal
+            val timestampStr = alertData.optString("timestamp")
+            val timestamp = parseTimestamp(timestampStr)
+
+            Log.i(
+                "UdpListenerService",
+                "[$alarmIdStr:$alarmId] Sender: $sender, Message: $message, seqNo: $seqNo"
+            )
+
+            val notification = NotificationCompat.Builder(this, EMERGENCY_CHANNEL_ID)
+                .setContentTitle(sender)
+                .setContentText(message)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .build()
+            val newAlarms = _alarmIds.value.toMutableMap()
+            newAlarms[alarmId] = AlertData().apply {
+                this.sender = sender
+                this.message = message
+                this.priority = priority
+                this.timestamp = timestamp
+            }
+            _alarmIds.value = newAlarms
+
+            notificationManager.notify(alarmId, notification)
+        } else {
+            val reset = alertData.optBoolean("reset", false)
+            Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET:$reset seqNo: $seqNo")
+            if (reset && hasSubId) {
+                val newAlarms = _alarmIds.value.toMutableMap()
+                val iterator = newAlarms.iterator()
+                while (iterator.hasNext()) {
+                    val (notifiedId, _) = iterator.next()
+                    if (notifiedId / 10 == alarmId / 10) {
+                        notificationManager.cancel(notifiedId)
+                        iterator.remove()
+                    }
+                }
+                _alarmIds.value = newAlarms
+            } else {
+                val newAlarms = _alarmIds.value.toMutableMap()
+                newAlarms.remove(alarmId)
+                _alarmIds.value = newAlarms
+                notificationManager.cancel(alarmId)
+
+                val extraIds = alertData.optJSONArray("extra_ids")
+                if (extraIds != null) {
+                    for (j in 0 until extraIds.length()) {
+                        val extraId = extraIds.getInt(j)
+                        Log.i("UdpListenerService", "[:$extraId] CLEARED extra")
+                        newAlarms.remove(extraId)
+                        notificationManager.cancel(extraId)
+                    }
+                }
+            }
         }
     }
 
@@ -322,7 +410,7 @@ class UdpListenerService : Service() {
         if (intent?.action == ACTION_SEND_REGISTRATION) {
             if (destinationAddress.isNotBlank()) {
                 // Cancel any existing job and start a new one. This will re-bind the socket and send a new registration message.
-                Log.d("UdpListenerService", "Alarm triggered. Restarting UDP coroutine.")
+                Log.v("UdpListenerService", "Alarm triggered. Restarting UDP coroutine.")
                 connectionJob?.cancel()
                 connectionJob = launchSocketConnection()
             }
