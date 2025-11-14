@@ -18,6 +18,7 @@ import android.system.ErrnoException
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -83,7 +84,7 @@ class UdpListenerService : Service() {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             super.onAvailable(network)
-            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             val capabilities = connectivityManager.getNetworkCapabilities(network)
             val isWifi = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
             AppLog.add("Network available. Is Wi-Fi: $isWifi")
@@ -103,7 +104,7 @@ class UdpListenerService : Service() {
     private val dozeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED) {
-                val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                val powerManager = context.getSystemService(POWER_SERVICE) as PowerManager
                 val isIdle = powerManager.isDeviceIdleMode
                 Log.i("UdpListenerService", "Doze mode changed. Idle: $isIdle")
                 AppLog.add("Doze mode changed. Idle: $isIdle")
@@ -117,7 +118,7 @@ class UdpListenerService : Service() {
         settingsDataStore = SettingsDataStore(this)
         RegistrationAlarmReceiver.schedule(this)
 
-        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
 
         val dozeFilter = IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
@@ -179,7 +180,7 @@ class UdpListenerService : Service() {
                 // ignore
             } catch (e: SocketException) {
                 val cause = e.cause
-                var osError = "N/A"
+                var osError: String
                 if (cause is ErrnoException) {
                     if (cause.errno != lastSocketOsError) {
                         lastSocketOsError = cause.errno
@@ -204,7 +205,7 @@ class UdpListenerService : Service() {
                 datagramSocket = null
                 delay(10_000)
             } catch (e: Exception) {
-                if (e !is kotlinx.coroutines.CancellationException) {
+                if (e !is CancellationException) {
                     AppLog.add("Coroutine loop failed: ${e.message}. Retrying in 10s.")
                     Log.e("UdpListenerService", "Connection coroutine failed", e)
                     datagramSocket?.close()
@@ -215,7 +216,7 @@ class UdpListenerService : Service() {
         }
     }
 
-    private suspend fun sendMessage(message: String) {
+    private fun sendMessage(message: String) {
         if (datagramSocket?.isConnected == true) {
             val data = message.toByteArray()
             val packet = DatagramPacket(data, data.size, InetSocketAddress(destinationAddress, 18806))
@@ -239,7 +240,7 @@ class UdpListenerService : Service() {
         }
     }
 
-    private suspend fun processPacket(packet: DatagramPacket) {
+    private fun processPacket(packet: DatagramPacket) {
         val jsonString = String(packet.data, 0, packet.length)
         try {
             val jsonObject = JSONObject(jsonString)
@@ -421,7 +422,7 @@ class UdpListenerService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivityManager.unregisterNetworkCallback(networkCallback)
         unregisterReceiver(dozeReceiver)
         RegistrationAlarmReceiver.cancel(this)

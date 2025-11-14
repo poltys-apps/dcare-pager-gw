@@ -2,7 +2,6 @@ package com.poltys.dcarepager
 
 import android.Manifest
 import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
@@ -39,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import java.util.Locale
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
 
         val serviceIntent = Intent(this, UdpListenerService::class.java)
         startService(serviceIntent)
-        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+        bindService(serviceIntent, serviceConnection, BIND_AUTO_CREATE)
 
         val settingsDataStore = SettingsDataStore(this)
         setContent {
@@ -184,5 +184,5 @@ fun ElapsedTimeCounter(timestamp: Instant) {
     val minutes = duration.toMinutes() % 60
     val seconds = duration.seconds % 60
 
-    Text(text = String.format("%02d:%02d:%02d", hours, minutes, seconds))
+    Text(text = String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds))
 }
