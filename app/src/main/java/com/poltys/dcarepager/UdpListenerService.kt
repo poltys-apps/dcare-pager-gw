@@ -56,6 +56,11 @@ class UdpListenerService : Service() {
         const val ACTION_SEND_REGISTRATION = "com.poltys.dcarepager.ACTION_SEND_REGISTRATION"
         private const val SILENT_CHANNEL_ID = "dcarepager_silent_channel"
         private const val EMERGENCY_CHANNEL_ID = "dcarepager_emergency_channel"
+        private const val HAS_ALARMS_CHANNEL_ID = "dcarepager_has_alarms_channel"
+
+        private const val SILENT_NOTIFICATION_ID = 1
+        private const val HAS_ALARMS_NOTIFICATION_ID = 2
+        private const val ALARM_NOTIFICATION_ID_BASE = 1000
     }
 
     inner class LocalBinder : Binder() {
@@ -79,6 +84,7 @@ class UdpListenerService : Service() {
     var lastSocketOsError: Int? = null
     private var friendlyName: String = ""
     private var initializing = true
+    private var lastNotificationTime = System.currentTimeMillis()
 
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -325,6 +331,22 @@ class UdpListenerService : Service() {
         } catch (e: JSONException) {
             Log.e("UdpListenerService", "Error parsing JSON", e)
         }
+        if (!alarms.value.isEmpty() && System.currentTimeMillis() - lastNotificationTime > 60_000 ) {
+            val notificationManager =
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val notification = NotificationCompat.Builder(this, HAS_ALARMS_CHANNEL_ID)
+                .setContentTitle(getString(R.string.has_alarms_content_title))
+                .setContentText(String.format(getString(R.string.has_alarms_content_text), alarms.value.size))
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .build()
+            notificationManager.notify(HAS_ALARMS_NOTIFICATION_ID, notification)
+            lastNotificationTime = System.currentTimeMillis()
+            Log.d("UdpListenerService", "Has alarms notification sent.")
+        } else if (alarms.value.isEmpty()) {
+            val notificationManager =
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(HAS_ALARMS_NOTIFICATION_ID)
+        }
     }
 
     private fun processAlertData(
@@ -365,7 +387,8 @@ class UdpListenerService : Service() {
             }
             _alarmIds.value = newAlarms
 
-            notificationManager.notify(alarmId, notification)
+            notificationManager.notify(ALARM_NOTIFICATION_ID_BASE + alarmId, notification)
+            lastNotificationTime = System.currentTimeMillis()
         } else {
             val reset = alertData.optBoolean("reset", false)
             Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET:$reset seqNo: $seqNo")
@@ -375,7 +398,7 @@ class UdpListenerService : Service() {
                 while (iterator.hasNext()) {
                     val (notifiedId, _) = iterator.next()
                     if (notifiedId / 10 == alarmId / 10) {
-                        notificationManager.cancel(notifiedId)
+                        notificationManager.cancel(ALARM_NOTIFICATION_ID_BASE + notifiedId)
                         iterator.remove()
                     }
                 }
@@ -384,7 +407,7 @@ class UdpListenerService : Service() {
                 val newAlarms = _alarmIds.value.toMutableMap()
                 newAlarms.remove(alarmId)
                 _alarmIds.value = newAlarms
-                notificationManager.cancel(alarmId)
+                notificationManager.cancel(ALARM_NOTIFICATION_ID_BASE + alarmId)
 
                 val extraIds = alertData.optJSONArray("extra_ids")
                 if (extraIds != null) {
@@ -392,7 +415,7 @@ class UdpListenerService : Service() {
                         val extraId = extraIds.getInt(j)
                         Log.i("UdpListenerService", "[:$extraId] CLEARED extra")
                         newAlarms.remove(extraId)
-                        notificationManager.cancel(extraId)
+                        notificationManager.cancel(ALARM_NOTIFICATION_ID_BASE + extraId)
                     }
                 }
             }
@@ -406,7 +429,7 @@ class UdpListenerService : Service() {
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
-        startForeground(1, notification)
+        startForeground(SILENT_NOTIFICATION_ID, notification)
 
         if (intent?.action == ACTION_SEND_REGISTRATION) {
             if (destinationAddress.isNotBlank()) {
@@ -463,5 +486,18 @@ class UdpListenerService : Service() {
             setSound(emergencySoundUri, audioAttributes)
         }
         notificationManager.createNotificationChannel(emergencyChannel)
+
+        // Has Alarms Channel to notify if there are active alarms every minute
+        val hasAlarmsSoundUri = "android.resource://$packageName/${R.raw.beep}".toUri()
+        val hasAlarmsChannel = NotificationChannel(
+            HAS_ALARMS_CHANNEL_ID,
+            "Active Alarms",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "For alarms that are currently active."
+            setSound(hasAlarmsSoundUri, audioAttributes)
+        }
+        notificationManager.createNotificationChannel(hasAlarmsChannel)
+
     }
 }

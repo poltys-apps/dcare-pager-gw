@@ -4,4 +4,6 @@
     <string name="udp_listener_content_title">DCare Pager Notifications</string>
     <string name="udp_listener_content_text">Listening for DCare notifications</string>
     <string name="friendly_name">Friendly Name of this Phone</string>
+    <string name="has_alarms_content_title">DCare Alarms</string>
+    <string name="has_alarms_content_text">You have %d active alarms</string>
 </resources>
