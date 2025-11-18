@@ -2,7 +2,8 @@
     <string name="app_name">DCare Pager</string>
     <string name="dcc_proxy_address">DCC Proxy Address</string>
     <string name="udp_listener_content_title">DCare Pager Notifications</string>
-    <string name="udp_listener_content_text">Listening for DCare notifications</string>
+    <string name="udp_listener_connected">Listening for DCare notifications</string>
+    <string name="udp_listener_not_connected">Disconnected from Proxy Server</string>
     <string name="friendly_name">Friendly Name of this Phone</string>
     <string name="has_alarms_content_title">DCare Alarms</string>
     <string name="has_alarms_content_text">You have %d active alarms</string>

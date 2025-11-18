@@ -85,6 +85,8 @@ class UdpListenerService : Service() {
     private var friendlyName: String = ""
     private var initializing = true
     private var lastNotificationTime = System.currentTimeMillis()
+    private var lastServerReceiveTime: ULong? = null
+
 
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -134,6 +136,7 @@ class UdpListenerService : Service() {
         serviceScope.launch {
             settingsDataStore.destinationAddressFlow.collect { address ->
                 if (address.isNotBlank() && address != destinationAddress) {
+                    Log.i("UdpListenerService", "Destination address changed to: $address")
                     destinationAddress = address
                     connectionJob?.cancel()
                     connectionJob = launchSocketConnection()
@@ -219,7 +222,24 @@ class UdpListenerService : Service() {
                     delay(10_000)
                 }
             }
+            if (lastServerReceiveTime != null && (System.currentTimeMillis().toULong() - lastServerReceiveTime!!) > 90_000UL) {
+                notifyStatus(false)
+                lastServerReceiveTime = null
+            }
         }
+    }
+
+    private fun notifyStatus(connected: Boolean) {
+        val notificationManager =
+            getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        val contentTextId = if (connected) R.string.udp_listener_connected else R.string.udp_listener_not_connected
+        val notification = NotificationCompat.Builder(this, SILENT_CHANNEL_ID)
+            .setContentTitle(getString(R.string.udp_listener_content_title))
+            .setContentText(getString(contentTextId))
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .build()
+        notificationManager.notify(SILENT_NOTIFICATION_ID, notification)
+        Log.d("UdpListenerService", "Status notification sent. Connected: $connected")
     }
 
     private fun sendMessage(message: String) {
@@ -347,6 +367,10 @@ class UdpListenerService : Service() {
                 getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.cancel(HAS_ALARMS_NOTIFICATION_ID)
         }
+        if (lastServerReceiveTime == null) {
+            notifyStatus(true)
+        }
+        lastServerReceiveTime = System.currentTimeMillis().toULong()
     }
 
     private fun processAlertData(
@@ -425,7 +449,7 @@ class UdpListenerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = NotificationCompat.Builder(this, SILENT_CHANNEL_ID)
             .setContentTitle(getString(R.string.udp_listener_content_title))
-            .setContentText(getString(R.string.udp_listener_content_text))
+            .setContentText(getString(R.string.udp_listener_not_connected))
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
