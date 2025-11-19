@@ -33,12 +33,16 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import java.io.BufferedReader
 import java.io.IOException
+import java.io.InputStreamReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.net.URL
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
@@ -156,14 +160,67 @@ class UdpListenerService : Service() {
         }
     }
 
+    private fun syncServerAlarmList() {
+        try {
+            val mURL = URL("http://$destinationAddress/alarms.json")
+            with(mURL.openConnection() as HttpURLConnection) {
+                requestMethod = "GET"
+                BufferedReader(InputStreamReader(inputStream)).use {
+                    val response = StringBuffer()
+
+                    var inputLine = it.readLine()
+                    while (inputLine != null) {
+                        response.append(inputLine)
+                        inputLine = it.readLine()
+                    }
+                    it.close()
+                    val jsonList = JSONArray(response.toString())
+                    Log.d("UdpListenerService", "Alarm list: $jsonList")
+                    for (i in 0 until jsonList.length()) {
+                        val alarmJson = jsonList.getJSONObject(i)
+                        val alarmIdStr = alarmJson.getString("id")
+                        val alarmId = (alarmIdStr.toULongOrNull() ?: 0UL).toInt()
+                        // check if alarmId is already in the list
+                        if (!_alarmIds.value.containsKey(alarmId)) {
+                            val sender = alarmJson.getString("device_name")
+                            val message = alarmJson.getString("subject")
+                            val timestampStr = alarmJson.getString("timestamp")
+                            val timestamp = parseTimestamp(timestampStr)
+                            val priority = alarmJson.optInt("priority", 4)
+
+                            Log.i(
+                                "UdpListenerService",
+                                "AlarmList: new [$alarmIdStr:$alarmId] Sender: $sender, Message: $message timestamp: $timestamp"
+                            )
+                            val newAlarms = _alarmIds.value.toMutableMap()
+                            newAlarms[alarmId] = AlertData().apply {
+                                this.sender = sender
+                                this.message = message
+                                this.timestamp = timestamp
+                                this.priority = priority
+                            }
+                            _alarmIds.value = newAlarms
+                        }
+                    }
+
+                }
+
+            }
+        } catch (e: Exception) {
+            Log.e("UdpListenerService", "Error getting alarm list ${e.message}")
+        }
+    }
+
     private fun launchSocketConnection() = serviceScope.launch(Dispatchers.IO) {
         while (isActive) {
+            var received = false
             try {
                 if (datagramSocket == null || datagramSocket!!.isClosed) {
                     datagramSocket = DatagramSocket()
                     datagramSocket?.soTimeout = 15000
                     datagramSocket!!.connect(InetSocketAddress(destinationAddress, 18806))
                     Log.i("UdpListenerService", "Socket connected to $destinationAddress")
+                    syncServerAlarmList()
                 }
 
                 if (registerTime == null || registerTime!!.isBefore(Instant.now().minusSeconds(30))) {
@@ -184,6 +241,7 @@ class UdpListenerService : Service() {
                 val packet = DatagramPacket(buffer, buffer.size)
                 datagramSocket?.receive(packet)
                 processPacket(packet)
+                received = true
             } catch (e: SocketTimeoutException) {
                 Log.d("UdpListenerService", "SocketTimeoutException: ${e.message}")
                 // ignore
@@ -222,7 +280,7 @@ class UdpListenerService : Service() {
                     delay(10_000)
                 }
             }
-            if (lastServerReceiveTime != null && (System.currentTimeMillis().toULong() - lastServerReceiveTime!!) > 90_000UL) {
+            if (!received && lastServerReceiveTime != null && (System.currentTimeMillis().toULong() - lastServerReceiveTime!!) > 90_000UL) {
                 notifyStatus(false)
                 lastServerReceiveTime = null
             }
@@ -356,7 +414,7 @@ class UdpListenerService : Service() {
                 getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val notification = NotificationCompat.Builder(this, HAS_ALARMS_CHANNEL_ID)
                 .setContentTitle(getString(R.string.has_alarms_content_title))
-                .setContentText(String.format(getString(R.string.has_alarms_content_text), alarms.value.size))
+                .setContentText(getString(R.string.has_alarms_content_text))
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .build()
             notificationManager.notify(HAS_ALARMS_NOTIFICATION_ID, notification)
@@ -449,7 +507,7 @@ class UdpListenerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = NotificationCompat.Builder(this, SILENT_CHANNEL_ID)
             .setContentTitle(getString(R.string.udp_listener_content_title))
-            .setContentText(getString(R.string.udp_listener_not_connected))
+            .setContentText(getString(R.string.udp_listener_running))
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
