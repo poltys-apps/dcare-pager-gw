@@ -193,33 +193,32 @@ class UdpListenerService : Service() {
                     it.close()
                     val jsonList = JSONArray(response.toString())
                     Log.d("UdpListenerService", "Alarm list: $jsonList")
+                    val newAlarms = mutableMapOf<Int, AlertData>()
                     for (i in 0 until jsonList.length()) {
                         val alarmJson = jsonList.getJSONObject(i)
                         val alarmIdStr = alarmJson.getString("id")
-                        val alarmId = (alarmIdStr.toULongOrNull() ?: 0UL).toInt()
+                        val alarmId = getAlarmId(alarmIdStr)
                         // check if alarmId is already in the list
-                        if (!_alarmIds.value.containsKey(alarmId)) {
-                            val sender = alarmJson.getString("device_name")
-                            val message = alarmJson.getString("subject")
-                            val timestampStr = alarmJson.getString("timestamp")
-                            val timestamp = parseTimestamp(timestampStr)
-                            val priority = alarmJson.optInt("priority", 4)
 
-                            Log.i(
-                                "UdpListenerService",
-                                "AlarmList: new [$alarmIdStr:$alarmId] Sender: $sender, Message: $message timestamp: $timestamp"
-                            )
-                            val newAlarms = _alarmIds.value.toMutableMap()
-                            newAlarms[alarmId] = AlertData().apply {
-                                this.sender = sender
-                                this.message = message
-                                this.timestamp = timestamp
-                                this.priority = priority
-                            }
-                            _alarmIds.value = newAlarms
+                        val sender = alarmJson.getString("device_name")
+                        val message = alarmJson.getString("subject")
+                        val timestampStr = alarmJson.getString("timestamp")
+                        val timestamp = parseTimestamp(timestampStr)
+                        val priority = alarmJson.optInt("priority", 4)
+
+                        Log.i(
+                            "UdpListenerService",
+                            "AlarmList: new [$alarmIdStr:$alarmId] Sender: $sender, Message: $message timestamp: $timestamp"
+                        )
+
+                        newAlarms[alarmId] = AlertData().apply {
+                            this.sender = sender
+                            this.message = message
+                            this.timestamp = timestamp
+                            this.priority = priority
                         }
                     }
-
+                    _alarmIds.value = newAlarms
                 }
 
             }
@@ -524,9 +523,10 @@ class UdpListenerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val contentTextId = if (lastServerReceiveTime != null) R.string.udp_listener_connected else R.string.udp_listener_not_connected
         val notification = NotificationCompat.Builder(this, SILENT_CHANNEL_ID)
             .setContentTitle(getString(R.string.udp_listener_content_title))
-            .setContentText(getString(R.string.udp_listener_running))
+            .setContentText(getString(contentTextId))
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
