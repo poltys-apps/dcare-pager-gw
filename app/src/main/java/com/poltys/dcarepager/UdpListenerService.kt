@@ -64,7 +64,6 @@ class UdpListenerService : Service() {
 
         private const val SILENT_NOTIFICATION_ID = 1
         private const val HAS_ALARMS_NOTIFICATION_ID = 2
-        private const val ALARM_NOTIFICATION_ID_BASE = 1000
     }
 
     inner class LocalBinder : Binder() {
@@ -84,6 +83,9 @@ class UdpListenerService : Service() {
 
     private val _alarmIds = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarmIds.asStateFlow()
+    private var alarmStrMap: MutableMap<String, Int> = mutableMapOf()
+    private var alarmIntMap: MutableMap<Int, String> = mutableMapOf()
+    private var lastAlarmId = 1000
     private var registerTime: Instant? = null
     var lastSocketOsError: Int? = null
     private var friendlyName: String = ""
@@ -158,6 +160,21 @@ class UdpListenerService : Service() {
                 }
             }
         }
+    }
+
+    private fun getAlarmId(alarmIdStr: String): Int {
+        alarmStrMap[alarmIdStr]?.let {
+            return it
+        }
+        var alarmId = alarmIdStr.toIntOrNull() ?: 0
+        if (alarmId < 1000000)  {
+            lastAlarmId += 1
+            alarmId = lastAlarmId
+        }
+        alarmStrMap[alarmIdStr] = alarmId
+        alarmIntMap[alarmId] = alarmIdStr
+        Log.d("UdpListenerService", "AlarmStrMap: New $alarmIdStr:$alarmId")
+        return alarmId
     }
 
     private fun syncServerAlarmList() {
@@ -437,7 +454,7 @@ class UdpListenerService : Service() {
         val seqNo = alertData.optInt("seq_no", 0)
         val armed = alertData.optBoolean("armed", false)
         val alarmIdStr = alertData.optString("id", "0")
-        val alarmId = (alarmIdStr.toULongOrNull() ?: 0UL).toInt()
+        val alarmId = getAlarmId(alarmIdStr)
         val hasSubId = alertData.optBoolean("has_sub_id", false)
 
         val notificationManager =
@@ -469,18 +486,19 @@ class UdpListenerService : Service() {
             }
             _alarmIds.value = newAlarms
 
-            notificationManager.notify(ALARM_NOTIFICATION_ID_BASE + alarmId, notification)
+            notificationManager.notify(alarmId, notification)
             lastNotificationTime = System.currentTimeMillis()
         } else {
             val reset = alertData.optBoolean("reset", false)
-            Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET:$reset seqNo: $seqNo")
+            Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET:$reset hasSubId:$hasSubId seqNo: $seqNo")
             if (reset && hasSubId) {
                 val newAlarms = _alarmIds.value.toMutableMap()
                 val iterator = newAlarms.iterator()
                 while (iterator.hasNext()) {
                     val (notifiedId, _) = iterator.next()
                     if (notifiedId / 10 == alarmId / 10) {
-                        notificationManager.cancel(ALARM_NOTIFICATION_ID_BASE + notifiedId)
+                        Log.d("UdpListenerService", "[$alarmId:$notifiedId] CLEARED by RESET")
+                        notificationManager.cancel(notifiedId)
                         iterator.remove()
                     }
                 }
@@ -489,15 +507,16 @@ class UdpListenerService : Service() {
                 val newAlarms = _alarmIds.value.toMutableMap()
                 newAlarms.remove(alarmId)
                 _alarmIds.value = newAlarms
-                notificationManager.cancel(ALARM_NOTIFICATION_ID_BASE + alarmId)
+                notificationManager.cancel(alarmId)
 
                 val extraIds = alertData.optJSONArray("extra_ids")
                 if (extraIds != null) {
                     for (j in 0 until extraIds.length()) {
                         val extraId = extraIds.getInt(j)
-                        Log.i("UdpListenerService", "[:$extraId] CLEARED extra")
-                        newAlarms.remove(extraId)
-                        notificationManager.cancel(ALARM_NOTIFICATION_ID_BASE + extraId)
+                        val alarmId = getAlarmId(extraId.toString())
+                        Log.d("UdpListenerService", "[$extraId:$alarmId] CLEARED by extraIds")
+                        newAlarms.remove(alarmId)
+                        notificationManager.cancel(alarmId)
                     }
                 }
             }
