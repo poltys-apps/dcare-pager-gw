@@ -92,8 +92,7 @@ class UdpListenerService : Service() {
     private var initializing = true
     private var lastNotificationTime = System.currentTimeMillis()
     private var lastServerReceiveTime: ULong? = null
-
-
+    private var lastSyncTimestamp: Instant? = null
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -191,8 +190,11 @@ class UdpListenerService : Service() {
                         inputLine = it.readLine()
                     }
                     it.close()
-                    val jsonList = JSONArray(response.toString())
-                    Log.d("UdpListenerService", "Alarm list: $jsonList")
+                    val alarmDataJson = JSONObject(response.toString())
+                    val timestampStr = alarmDataJson.getString("timestamp")
+                    lastSyncTimestamp = parseTimestamp(timestampStr)
+                    val jsonList = alarmDataJson.getJSONArray("alarms")
+                    Log.d("UdpListenerService", "AlarmList: $lastSyncTimestamp count: ${jsonList.length()}")
                     val newAlarms = mutableMapOf<Int, AlertData>()
                     for (i in 0 until jsonList.length()) {
                         val alarmJson = jsonList.getJSONObject(i)
@@ -352,7 +354,7 @@ class UdpListenerService : Service() {
                 processAlertData(alertData)
             } else if (jsonObject.has("Notifies")) {
                 val notifies = jsonObject.getJSONArray("Notifies")
-                Log.d("UdpListenerService", "Received Notifies JSON: $notifies")
+                Log.d("UdpListenerService", "Received Notifies count: ${notifies.length()}")
                 val armedAlerts: MutableMap<Int, JSONObject> = mutableMapOf()
                 for (i in 0 until notifies.length()) {
                     val notify = notifies.getJSONObject(i)
@@ -360,6 +362,12 @@ class UdpListenerService : Service() {
                         val alertData = notify.getJSONObject("Alert")
                         val seqNo = alertData.optInt("seq_no", 0)
                         sendMessage("""{"Ack":$seqNo}""")
+                        val timestamp = parseTimestamp(alertData.optString("timestamp"))
+                        if (lastSyncTimestamp != null && timestamp.isBefore(lastSyncTimestamp)) {
+                            Log.d("UdpListenerService", "Ignore Retransmit Alert timestamp: $timestamp")
+                            continue
+                        }
+                        Log.d("UdpListenerService", "Received Retransmit Alert JSON: $alertData")
 
                         val armed = alertData.optBoolean("armed", false)
                         val alarmIdStr = alertData.optString("id", "0")
