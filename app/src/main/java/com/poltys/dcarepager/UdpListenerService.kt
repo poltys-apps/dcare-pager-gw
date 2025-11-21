@@ -364,7 +364,7 @@ class UdpListenerService : Service() {
                         sendMessage("""{"Ack":$seqNo}""")
                         val timestamp = parseTimestamp(alertData.optString("timestamp"))
                         if (lastSyncTimestamp != null && timestamp.isBefore(lastSyncTimestamp)) {
-                            Log.d("UdpListenerService", "Ignore Retransmit Alert timestamp: $timestamp")
+                            Log.v("UdpListenerService", "Ignore Retransmit Alert timestamp: $timestamp")
                             continue
                         }
                         Log.d("UdpListenerService", "Received Retransmit Alert JSON: $alertData")
