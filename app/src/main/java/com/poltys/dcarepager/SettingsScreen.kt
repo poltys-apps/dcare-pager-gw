@@ -1,9 +1,11 @@
 package com.poltys.dcarepager
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -17,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -29,17 +32,23 @@ fun SettingsScreen(navController: NavHostController, settingsDataStore: Settings
     // These collect the latest values from DataStore as they change
     val destinationAddress by settingsDataStore.destinationAddressFlow.collectAsState(initial = "")
     val friendlyName by settingsDataStore.friendlyNameFlow.collectAsState(initial = "")
+    val silentNotification by settingsDataStore.silentNotificationFlow.collectAsState(initial = false)
 
     // These hold the current state of the TextFields
     var newDestinationAddress by remember { mutableStateOf("") }
     var newFriendlyName by remember { mutableStateOf("") }
+    var newSilentNotification by remember { mutableStateOf(false) }
 
-    // This is the key fix: It synchronizes the TextField state when the DataStore values first load.
+
+    // Synchronizes the TextField state when the DataStore values first load.
     LaunchedEffect(destinationAddress) {
         newDestinationAddress = destinationAddress
     }
     LaunchedEffect(friendlyName) {
         newFriendlyName = friendlyName
+    }
+    LaunchedEffect(silentNotification) {
+        newSilentNotification = silentNotification
     }
 
     val scope = rememberCoroutineScope()
@@ -61,11 +70,19 @@ fun SettingsScreen(navController: NavHostController, settingsDataStore: Settings
                 onValueChange = { newFriendlyName = it },
                 label = { Text(stringResource(R.string.friendly_name)) }
             )
+            Row (modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.silent_notification))
+                Checkbox(
+                    checked = newSilentNotification,
+                    onCheckedChange = { newSilentNotification = it },
+                )
+            }
 
             Button(onClick = {
                 scope.launch {
                     settingsDataStore.saveDestinationAddress(newDestinationAddress)
                     settingsDataStore.saveFriendlyName(newFriendlyName)
+                    settingsDataStore.saveSilentNotification(newSilentNotification)
                     // Navigate back after saving
                     navController.navigateUp()
                 }

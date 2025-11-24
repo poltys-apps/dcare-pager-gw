@@ -93,6 +93,8 @@ class UdpListenerService : Service() {
     private var lastNotificationTime = System.currentTimeMillis()
     private var lastServerReceiveTime: ULong? = null
     private var lastSyncTimestamp: Instant? = null
+    private var silentNotification: Boolean = false
+
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -156,6 +158,19 @@ class UdpListenerService : Service() {
                 if (newFriendlyName.isNotBlank() && newFriendlyName != friendlyName) {
                     AppLog.add("Friendly name changed to: $newFriendlyName")
                     friendlyName = newFriendlyName
+                }
+            }
+        }
+
+        serviceScope.launch {
+            settingsDataStore.silentNotificationFlow.collect { newSilentNotification ->
+                if (newSilentNotification != silentNotification) {
+                    silentNotification = newSilentNotification
+                    if (silentNotification) {
+                        AppLog.add("Silent notification enabled.")
+                    } else {
+                        AppLog.add("Silent notification disabled.")
+                    }
                 }
             }
         }
@@ -479,7 +494,7 @@ class UdpListenerService : Service() {
                 "[$alarmIdStr:$alarmId] Sender: $sender, Message: $message, seqNo: $seqNo"
             )
 
-            val notification = NotificationCompat.Builder(this, EMERGENCY_CHANNEL_ID)
+            val notification = NotificationCompat.Builder(this, if (silentNotification) SILENT_CHANNEL_ID else EMERGENCY_CHANNEL_ID)
                 .setContentTitle(sender)
                 .setContentText(message)
                 .setSmallIcon(R.mipmap.ic_launcher)
@@ -494,7 +509,8 @@ class UdpListenerService : Service() {
             _alarmIds.value = newAlarms
 
             notificationManager.notify(alarmId, notification)
-            lastNotificationTime = System.currentTimeMillis()
+            if (!silentNotification)
+                lastNotificationTime = System.currentTimeMillis()
         } else {
             val reset = alertData.optBoolean("reset", false)
             Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET:$reset hasSubId:$hasSubId seqNo: $seqNo")
