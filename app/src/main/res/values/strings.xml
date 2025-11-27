@@ -8,4 +8,5 @@
     <string name="has_alarms_content_title">DCare Alarms</string>
     <string name="has_alarms_content_text">You have active alarms</string>
     <string name="silent_notification">Silent Alarm Notifications</string>
+    <string name="dcc_login_pin">PIN</string>
 </resources>

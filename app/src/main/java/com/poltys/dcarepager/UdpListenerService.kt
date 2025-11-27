@@ -46,6 +46,7 @@ import java.net.URL
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
+import kotlin.time.Duration
 
 class AlertData {
     var sender: String = ""
@@ -80,6 +81,11 @@ class UdpListenerService : Service() {
     private val buffer = ByteArray(10240)
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var connectionJob: Job? = null
+    private var loginPIN: String? = null
+    private var syncLoginData = true
+    private val _loginName = MutableStateFlow<String>("Logged Out")
+    val loginName: StateFlow<String> = _loginName.asStateFlow()
+    private var syncAlarmList = true
 
     private val _alarmIds = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarmIds.asStateFlow()
@@ -93,7 +99,9 @@ class UdpListenerService : Service() {
     private var lastNotificationTime = System.currentTimeMillis()
     private var lastServerReceiveTime: ULong? = null
     private var lastSyncTimestamp: Instant? = null
+    private var clockOffset: Long = 0
     private var silentNotification: Boolean = false
+    private var escalateProfile: Map<String, String> = emptyMap()
 
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -174,6 +182,16 @@ class UdpListenerService : Service() {
                 }
             }
         }
+
+        serviceScope.launch {
+            settingsDataStore.loginPinFlow.collect { newLoginPin ->
+                if (newLoginPin.isNotBlank() && newLoginPin != loginPIN) {
+                    AppLog.add("Login PIN changed to: $newLoginPin")
+                    loginPIN = newLoginPin
+                    syncLoginData = true
+                }
+            }
+        }
     }
 
     private fun getAlarmId(alarmIdStr: String): Int {
@@ -191,9 +209,12 @@ class UdpListenerService : Service() {
         return alarmId
     }
 
-    private fun syncServerAlarmList() {
+    private fun syncLoginData() {
+        if (loginPIN.isNullOrBlank() || !syncLoginData) {
+            return
+        }
         try {
-            val mURL = URL("http://$destinationAddress/alarms.json")
+            val mURL = URL("http://$destinationAddress/config/escalate_config.json?pin=$loginPIN")
             with(mURL.openConnection() as HttpURLConnection) {
                 requestMethod = "GET"
                 BufferedReader(InputStreamReader(inputStream)).use {
@@ -205,11 +226,76 @@ class UdpListenerService : Service() {
                         inputLine = it.readLine()
                     }
                     it.close()
+
+                    syncLoginData = false
+                    val loginResponseJson = JSONObject(response.toString())
+                    val signIns = loginResponseJson.getJSONArray("sign_ins")
+                    if (signIns.length() == 0) {
+                        Log.e("UdpListenerService", "Invalid PIN.")
+                        return@with
+                    }
+                    val loginName = (signIns[0] as JSONObject).getString("username")
+                    val profiles = loginResponseJson.getJSONObject("profiles")
+                    val profilesMap = mutableMapOf<String, String>()
+                    for (key in profiles.keys()) {
+                        profilesMap[key] = profiles.getString(key)
+                    }
+                    _loginName.value = loginName
+                    escalateProfile = profilesMap
+                    Log.d("UdpListenerService", "Login profile data: $escalateProfile for $loginPIN ($loginName)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("UdpListenerService", "Error getting login profiles", e)
+        }
+
+    }
+
+    // return null if alarm is invalid for current login, 0 if alarm need to be processed immediately, or delay in seconds
+    private fun manageProfiles(alarmJson: JSONObject) : Int? {
+        var delay: Int? = 0
+        if (!escalateProfile.isEmpty()) {
+            val profileDelays = alarmJson.optJSONObject("profile_delays")
+            if (profileDelays != null) {
+                delay = null
+                for (key in profileDelays.keys()) {
+                    if (escalateProfile.keys.contains(key)) {
+                        val pDelay = profileDelays.getInt(key)
+                        if (delay == null || pDelay < delay) {
+                            delay = pDelay
+                        }
+                        Log.d("UdpListenerService", "Profile delay: $key -> $pDelay => $delay")
+                    }
+                }
+            }
+        }
+        return delay
+    }
+
+    private fun syncServerAlarmList() {
+        if (!syncAlarmList) {
+            return
+        }
+        try {
+            val mURL = URL("http://$destinationAddress/alarms.json")
+            with(mURL.openConnection() as HttpURLConnection) {
+                requestMethod = "GET"
+                BufferedReader(InputStreamReader(inputStream)).use {
+                    val localUtcTime = Instant.now()
+                    val response = StringBuffer()
+
+                    var inputLine = it.readLine()
+                    while (inputLine != null) {
+                        response.append(inputLine)
+                        inputLine = it.readLine()
+                    }
+                    it.close()
                     val alarmDataJson = JSONObject(response.toString())
                     val timestampStr = alarmDataJson.getString("timestamp")
                     lastSyncTimestamp = parseTimestamp(timestampStr)
+                    clockOffset = localUtcTime.toEpochMilli() - lastSyncTimestamp!!.toEpochMilli()
                     val jsonList = alarmDataJson.getJSONArray("alarms")
-                    Log.d("UdpListenerService", "AlarmList: $lastSyncTimestamp count: ${jsonList.length()}")
+                    Log.d("UdpListenerService", "AlarmList: $lastSyncTimestamp count: ${jsonList.length()} Clock Offset: $clockOffset")
                     val newAlarms = mutableMapOf<Int, AlertData>()
                     for (i in 0 until jsonList.length()) {
                         val alarmJson = jsonList.getJSONObject(i)
@@ -222,11 +308,21 @@ class UdpListenerService : Service() {
                         val timestampStr = alarmJson.getString("timestamp")
                         val timestamp = parseTimestamp(timestampStr)
                         val priority = alarmJson.optInt("priority", 4)
+                        val delay = manageProfiles(alarmJson) ?: continue
 
-                        Log.i(
-                            "UdpListenerService",
-                            "AlarmList: new [$alarmIdStr:$alarmId] Sender: $sender, Message: $message timestamp: $timestamp"
-                        )
+                        if (delay > 0) {
+                            val delayedTimestamp =
+                                timestamp.plusSeconds(delay.toLong()).plusMillis(clockOffset)
+                            Log.i(
+                                "UdpListenerService",
+                                "AlarmList: new delayed [$alarmIdStr:$alarmId] Sender: $sender, Message: $message $timestamp -> $delayedTimestamp"
+                            )
+                        } else {
+                            Log.i(
+                                "UdpListenerService",
+                                "AlarmList: new [$alarmIdStr:$alarmId] Sender: $sender, Message: $message $timestamp -> now"
+                            )
+                        }
 
                         newAlarms[alarmId] = AlertData().apply {
                             this.sender = sender
@@ -236,6 +332,7 @@ class UdpListenerService : Service() {
                         }
                     }
                     _alarmIds.value = newAlarms
+                    syncAlarmList = false
                 }
 
             }
@@ -253,8 +350,9 @@ class UdpListenerService : Service() {
                     datagramSocket?.soTimeout = 15000
                     datagramSocket!!.connect(InetSocketAddress(destinationAddress, 18806))
                     Log.i("UdpListenerService", "Socket connected to $destinationAddress")
-                    syncServerAlarmList()
                 }
+                syncServerAlarmList()
+                syncLoginData()
 
                 if (registerTime == null || registerTime!!.isBefore(Instant.now().minusSeconds(30))) {
                     registerTime = Instant.now()
@@ -488,11 +586,19 @@ class UdpListenerService : Service() {
             val priority = alertData.optInt("priority", 4) // 4 = Normal
             val timestampStr = alertData.optString("timestamp")
             val timestamp = parseTimestamp(timestampStr)
-
-            Log.i(
-                "UdpListenerService",
-                "[$alarmIdStr:$alarmId] Sender: $sender, Message: $message, seqNo: $seqNo"
-            )
+            val delay = manageProfiles(alertData) ?: return
+            if (delay > 0) {
+                val delayedTimestamp = timestamp.plusSeconds(delay.toLong()).plusMillis(clockOffset)
+                Log.i(
+                    "UdpListenerService",
+                    "[$alarmIdStr:$alarmId] Notify delayed Sender: $sender, Message: $message, seqNo: $seqNo $timestamp -> $delayedTimestamp"
+                )
+            } else {
+                Log.i(
+                    "UdpListenerService",
+                    "[$alarmIdStr:$alarmId] Notify Sender: $sender, Message: $message, seqNo: $seqNo $timestamp -> now"
+                )
+            }
 
             val notification = NotificationCompat.Builder(this, if (silentNotification) SILENT_CHANNEL_ID else EMERGENCY_CHANNEL_ID)
                 .setContentTitle(sender)
