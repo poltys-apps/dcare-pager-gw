@@ -25,7 +25,7 @@ class RegistrationAlarmReceiver : BroadcastReceiver() {
                 PendingIntent.FLAG_IMMUTABLE
             )
 
-            Log.d("RegistrationAlarmReceiver", "Scheduling next alarm.")
+            Log.v("RegistrationAlarmReceiver", "Scheduling next alarm.")
 
             // On modern Android, we need to check if we can schedule exact alarms.
             // The SCHEDULE_EXACT_ALARM permission in the manifest is required.
@@ -62,7 +62,7 @@ class RegistrationAlarmReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        Log.d("RegistrationAlarmReceiver", "Alarm received, starting service.")
+        Log.v("RegistrationAlarmReceiver", "Alarm received, starting service.")
         // Start the service to perform the action
         val serviceIntent = Intent(context, UdpListenerService::class.java).apply {
             action = UdpListenerService.ACTION_SEND_REGISTRATION

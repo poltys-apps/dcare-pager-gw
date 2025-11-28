@@ -43,12 +43,13 @@ import java.net.InetSocketAddress
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
-import kotlin.time.Duration
 
 class AlertData {
+    var delayedJob: Job? = null
     var sender: String = ""
     var message: String = ""
     var priority: Int = 1 // 1..5, 1 being highest
@@ -83,10 +84,11 @@ class UdpListenerService : Service() {
     private var connectionJob: Job? = null
     private var loginPIN: String? = null
     private var syncLoginData = true
-    private val _loginName = MutableStateFlow<String>("Logged Out")
+    private val _loginName = MutableStateFlow("Logged Out")
     val loginName: StateFlow<String> = _loginName.asStateFlow()
     private var syncAlarmList = true
 
+    private var delayedAlarms: MutableMap<Int, AlertData> = mutableMapOf()
     private val _alarmIds = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarmIds.asStateFlow()
     private var alarmStrMap: MutableMap<String, Int> = mutableMapOf()
@@ -297,6 +299,7 @@ class UdpListenerService : Service() {
                     val jsonList = alarmDataJson.getJSONArray("alarms")
                     Log.d("UdpListenerService", "AlarmList: $lastSyncTimestamp count: ${jsonList.length()} Clock Offset: $clockOffset")
                     val newAlarms = mutableMapOf<Int, AlertData>()
+                    delayedAlarms.clear()
                     for (i in 0 until jsonList.length()) {
                         val alarmJson = jsonList.getJSONObject(i)
                         val alarmIdStr = alarmJson.getString("id")
@@ -306,29 +309,35 @@ class UdpListenerService : Service() {
                         val sender = alarmJson.getString("device_name")
                         val message = alarmJson.getString("subject")
                         val timestampStr = alarmJson.getString("timestamp")
-                        val timestamp = parseTimestamp(timestampStr)
+                        val timestamp = parseTimestamp(timestampStr).plusMillis(clockOffset)
                         val priority = alarmJson.optInt("priority", 4)
                         val delay = manageProfiles(alarmJson) ?: continue
 
                         if (delay > 0) {
                             val delayedTimestamp =
-                                timestamp.plusSeconds(delay.toLong()).plusMillis(clockOffset)
+                                timestamp.plusSeconds(delay.toLong())
+
+                            val delayToTrigger = Duration.between(Instant.now(), delayedTimestamp).toMillis()
+                            addDelayedAlarm(alarmId, AlertData().apply {
+                                this.sender = sender
+                                this.message = message
+                                this.priority = priority
+                            }, delayToTrigger)
                             Log.i(
                                 "UdpListenerService",
-                                "AlarmList: new delayed [$alarmIdStr:$alarmId] Sender: $sender, Message: $message $timestamp -> $delayedTimestamp"
+                                "[$alarmIdStr:$alarmId] AlarmList delayed $delay Sender: $sender, Message: $message $timestamp +$delayToTrigger ms"
                             )
                         } else {
                             Log.i(
                                 "UdpListenerService",
-                                "AlarmList: new [$alarmIdStr:$alarmId] Sender: $sender, Message: $message $timestamp -> now"
+                                "[$alarmIdStr:$alarmId] AlarmList Sender: $sender, Message: $message $timestamp"
                             )
-                        }
-
-                        newAlarms[alarmId] = AlertData().apply {
-                            this.sender = sender
-                            this.message = message
-                            this.timestamp = timestamp
-                            this.priority = priority
+                            newAlarms[alarmId] = AlertData().apply {
+                                this.sender = sender
+                                this.message = message
+                                this.timestamp = timestamp
+                                this.priority = priority
+                            }
                         }
                     }
                     _alarmIds.value = newAlarms
@@ -341,6 +350,61 @@ class UdpListenerService : Service() {
         }
     }
 
+    private fun addDelayedAlarm(id: Int, alertData: AlertData, delay: Long) {
+        alertData.delayedJob = launchDelayedAlarms(id, delay)
+        delayedAlarms[id] = alertData
+    }
+
+    private fun removeDelayedAlarm(id: Int, resetSubId: Boolean) {
+        if (resetSubId) {
+            val iterator = delayedAlarms.iterator()
+            while (iterator.hasNext()) {
+                val (notifiedId, data) = iterator.next()
+                if (notifiedId / 10 == id / 10) {
+                    Log.i("UdpListenerService", "[$id:$notifiedId] CLEARED delayed by RESET")
+                    data.delayedJob?.cancel()
+                    iterator.remove()
+                }
+            }
+        } else {
+            val data = delayedAlarms.remove(id)
+            data?.delayedJob?.cancel()
+        }
+    }
+
+    private fun notifyAlarm(alarmId: Int, alertData: AlertData) {
+        val notificationManager =
+            getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        val notification = NotificationCompat.Builder(
+            this,
+            if (silentNotification) SILENT_CHANNEL_ID else EMERGENCY_CHANNEL_ID
+        )
+            .setContentTitle(alertData.sender)
+            .setContentText(alertData.message)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .build()
+        val newAlarms = _alarmIds.value.toMutableMap()
+        newAlarms[alarmId] = AlertData().apply {
+            this.sender = alertData.sender
+            this.message = alertData.message
+            this.priority = alertData.priority
+            this.timestamp = alertData.timestamp
+        }
+        _alarmIds.value = newAlarms
+
+        notificationManager.notify(alarmId, notification)
+        if (!silentNotification)
+            lastNotificationTime = System.currentTimeMillis()
+    }
+
+    private fun launchDelayedAlarms(alarmId: Int, delay: Long) = serviceScope.launch(Dispatchers.IO) {
+        delay(delay)
+        delayedAlarms.remove(alarmId)?.let {
+            Log.i("UdpListenerService", "[$alarmId] Delayed Alarm triggered.")
+            notifyAlarm(alarmId, it)
+        }
+    }
+
     private fun launchSocketConnection() = serviceScope.launch(Dispatchers.IO) {
         while (isActive) {
             var received = false
@@ -350,6 +414,7 @@ class UdpListenerService : Service() {
                     datagramSocket?.soTimeout = 15000
                     datagramSocket!!.connect(InetSocketAddress(destinationAddress, 18806))
                     Log.i("UdpListenerService", "Socket connected to $destinationAddress")
+                    syncAlarmList = true
                 }
                 syncServerAlarmList()
                 syncLoginData()
@@ -585,57 +650,54 @@ class UdpListenerService : Service() {
             val message = alertData.optString("subject", "")
             val priority = alertData.optInt("priority", 4) // 4 = Normal
             val timestampStr = alertData.optString("timestamp")
-            val timestamp = parseTimestamp(timestampStr)
+            val timestamp = parseTimestamp(timestampStr).plusMillis(clockOffset)
             val delay = manageProfiles(alertData) ?: return
             if (delay > 0) {
-                val delayedTimestamp = timestamp.plusSeconds(delay.toLong()).plusMillis(clockOffset)
+                val delayedTimestamp = timestamp.plusSeconds(delay.toLong())
+                val delayToTrigger = Duration.between(Instant.now(), delayedTimestamp).toMillis()
+                addDelayedAlarm(alarmId, AlertData().apply {
+                    this.sender = sender
+                    this.message = message
+                    this.priority = priority
+                }, delayToTrigger)
                 Log.i(
                     "UdpListenerService",
-                    "[$alarmIdStr:$alarmId] Notify delayed Sender: $sender, Message: $message, seqNo: $seqNo $timestamp -> $delayedTimestamp"
+                    "[$alarmIdStr:$alarmId] Notify delayed $delay Sender: $sender, Message: $message, seqNo: $seqNo $timestamp +$delayToTrigger ms"
                 )
             } else {
                 Log.i(
                     "UdpListenerService",
-                    "[$alarmIdStr:$alarmId] Notify Sender: $sender, Message: $message, seqNo: $seqNo $timestamp -> now"
+                    "[$alarmIdStr:$alarmId] Notify Sender: $sender, Message: $message, seqNo: $seqNo $timestamp"
                 )
+                notifyAlarm(alarmId, AlertData().apply {
+                    this.sender = sender
+                    this.message = message
+                    this.priority = priority
+                    this.timestamp = timestamp
+                })
             }
 
-            val notification = NotificationCompat.Builder(this, if (silentNotification) SILENT_CHANNEL_ID else EMERGENCY_CHANNEL_ID)
-                .setContentTitle(sender)
-                .setContentText(message)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .build()
-            val newAlarms = _alarmIds.value.toMutableMap()
-            newAlarms[alarmId] = AlertData().apply {
-                this.sender = sender
-                this.message = message
-                this.priority = priority
-                this.timestamp = timestamp
-            }
-            _alarmIds.value = newAlarms
-
-            notificationManager.notify(alarmId, notification)
-            if (!silentNotification)
-                lastNotificationTime = System.currentTimeMillis()
         } else {
             val reset = alertData.optBoolean("reset", false)
-            Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET:$reset hasSubId:$hasSubId seqNo: $seqNo")
             if (reset && hasSubId) {
+                Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED RESET & sub_id seqNo: $seqNo")
                 val newAlarms = _alarmIds.value.toMutableMap()
                 val iterator = newAlarms.iterator()
                 while (iterator.hasNext()) {
                     val (notifiedId, _) = iterator.next()
                     if (notifiedId / 10 == alarmId / 10) {
-                        Log.d("UdpListenerService", "[$alarmId:$notifiedId] CLEARED by RESET")
+                        Log.i("UdpListenerService", "[$alarmId:$notifiedId] CLEARED by RESET")
                         notificationManager.cancel(notifiedId)
                         iterator.remove()
                     }
                 }
                 _alarmIds.value = newAlarms
+                removeDelayedAlarm(alarmId, true)
             } else {
+                Log.i("UdpListenerService", "[$alarmIdStr:$alarmId] CLEARED seqNo: $seqNo")
                 val newAlarms = _alarmIds.value.toMutableMap()
+                removeDelayedAlarm(alarmId, false)
                 newAlarms.remove(alarmId)
-                _alarmIds.value = newAlarms
                 notificationManager.cancel(alarmId)
 
                 val extraIds = alertData.optJSONArray("extra_ids")
@@ -643,11 +705,13 @@ class UdpListenerService : Service() {
                     for (j in 0 until extraIds.length()) {
                         val extraId = extraIds.getInt(j)
                         val alarmId = getAlarmId(extraId.toString())
-                        Log.d("UdpListenerService", "[$extraId:$alarmId] CLEARED by extraIds")
+                        Log.i("UdpListenerService", "[$extraId:$alarmId] CLEARED by extraIds")
                         newAlarms.remove(alarmId)
                         notificationManager.cancel(alarmId)
+                        removeDelayedAlarm(alarmId, false)
                     }
                 }
+                _alarmIds.value = newAlarms
             }
         }
     }
