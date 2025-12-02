@@ -43,6 +43,7 @@ import java.net.InetSocketAddress
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -66,6 +67,8 @@ class UdpListenerService : Service() {
 
         private const val SILENT_NOTIFICATION_ID = 1
         private const val HAS_ALARMS_NOTIFICATION_ID = 2
+
+        private const val LOGIN_SYNC_TIME_SECONDS = 1200L
     }
 
     inner class LocalBinder : Binder() {
@@ -83,7 +86,7 @@ class UdpListenerService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var connectionJob: Job? = null
     private var loginPIN: String? = null
-    private var syncLoginData = true
+    private var syncLoginTime: Instant? = null
     private val _loginName = MutableStateFlow("Logged Out")
     val loginName: StateFlow<String> = _loginName.asStateFlow()
     private var syncAlarmList = true
@@ -190,7 +193,7 @@ class UdpListenerService : Service() {
                 if (newLoginPin.isNotBlank() && newLoginPin != loginPIN) {
                     AppLog.add("Login PIN changed to: $newLoginPin")
                     loginPIN = newLoginPin
-                    syncLoginData = true
+                    syncLoginTime = null
                 }
             }
         }
@@ -212,11 +215,12 @@ class UdpListenerService : Service() {
     }
 
     private fun syncLoginData() {
-        if (loginPIN.isNullOrBlank() || !syncLoginData) {
+        if (loginPIN.isNullOrBlank() || (syncLoginTime != null && syncLoginTime!!.isAfter(Instant.now().minusSeconds(LOGIN_SYNC_TIME_SECONDS)))) {
             return
         }
         try {
-            val mURL = URL("http://$destinationAddress/config/escalate_config.json?pin=$loginPIN")
+            val urlEncodedName = URLEncoder.encode(friendlyName, "UTF-8")
+            val mURL = URL("http://$destinationAddress/config/escalate_config.json?pin=$loginPIN&name=$urlEncodedName")
             with(mURL.openConnection() as HttpURLConnection) {
                 requestMethod = "GET"
                 BufferedReader(InputStreamReader(inputStream)).use {
@@ -229,7 +233,7 @@ class UdpListenerService : Service() {
                     }
                     it.close()
 
-                    syncLoginData = false
+                    syncLoginTime = Instant.now()
                     val loginResponseJson = JSONObject(response.toString())
                     val signIns = loginResponseJson.getJSONArray("sign_ins")
                     if (signIns.length() == 0) {
@@ -244,7 +248,7 @@ class UdpListenerService : Service() {
                     }
                     _loginName.value = loginName
                     escalateProfile = profilesMap
-                    Log.d("UdpListenerService", "Login profile data: $escalateProfile for $loginPIN ($loginName)")
+                    Log.i("UdpListenerService", "Login profile data: $escalateProfile for $loginPIN ($loginName)")
                 }
             }
         } catch (e: Exception) {

@@ -33,6 +33,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,8 +76,9 @@ fun LoginScreen(navController: NavHostController, settingsDataStore: SettingsDat
                     errorMessage = ""
                     withContext(Dispatchers.IO) {
                         try {
+                            val friendlyName = URLEncoder.encode(settingsDataStore.friendlyNameFlow.first(), "UTF-8")
                             val mURL =
-                                URL("http://$destinationAddress/config/escalate_config.json?pin=$newLoginPin")
+                                URL("http://$destinationAddress/config/escalate_config.json?pin=$newLoginPin&name=$friendlyName")
                             with(mURL.openConnection() as HttpURLConnection) {
                                 requestMethod = "GET"
                                 BufferedReader(InputStreamReader(inputStream)).use {

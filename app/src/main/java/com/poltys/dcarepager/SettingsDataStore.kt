@@ -9,8 +9,18 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+
+/**
+ * Generates a unique ID string using UUID.
+ * Example output: "player_550e8400-e29b-41d4-a716-446655440000"
+ */
+fun generateUniqueNameId(prefix: String = "phone"): String {
+    val uuid = UUID.randomUUID().toString()
+    return "${prefix}_$uuid"
+}
 
 class SettingsDataStore(context: Context) {
 
@@ -36,7 +46,7 @@ class SettingsDataStore(context: Context) {
 
     val friendlyNameFlow: Flow<String> = dataStore.data
         .map {
-            it[PreferencesKeys.FRIENDLY_NAME] ?: ""
+            it[PreferencesKeys.FRIENDLY_NAME] ?: generateUniqueNameId()
         }
 
     suspend fun saveFriendlyName(friendlyName: String) {

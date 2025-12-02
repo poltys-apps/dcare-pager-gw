@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
-import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,7 +61,7 @@ import java.time.Instant
 class MainViewModel : ViewModel() {
     private val _alarms = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarms.asStateFlow()
-    private val _loginName = MutableStateFlow<String>("Logged Out")
+    private val _loginName = MutableStateFlow("Logged Out")
     val loginName: StateFlow<String> = _loginName.asStateFlow()
 
     fun setAlarms(alarms: Map<Int, AlertData>) {
@@ -72,6 +71,7 @@ class MainViewModel : ViewModel() {
     fun setLoginName(loginName: String) {
         _loginName.value = loginName
     }
+
 }
 
 class MainActivity : ComponentActivity() {
@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
                     mainViewModel.setLoginName(loginName)
                 }
             }
+
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -146,13 +147,20 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(navController: NavController, viewModel: MainViewModel, settingsDataStore: SettingsDataStore) {
     val alarms by viewModel.alarms.collectAsState()
     val loginName by viewModel.loginName.collectAsState()
+    val friendlyName by settingsDataStore.friendlyNameFlow.collectAsState(initial = "")
+
     val sortedAlarms = alarms.toList().sortedWith(compareByDescending<Pair<Int, AlertData>> { it.second.priority }.thenBy { it.second.timestamp })
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text("DCare Pager: $loginName") },
+                title = {
+                            Column() {
+                                Text(friendlyName)
+                                Text(loginName)
+                            }
+                        },
                 actions = {
                     IconButton(onClick = { navController.navigate("settings") }) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
