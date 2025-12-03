@@ -13,10 +13,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -36,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +53,7 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.poltys.dcarepager.ui.theme.Check
 import com.poltys.dcarepager.ui.theme.DcarePagerTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,11 +64,17 @@ import java.time.Duration
 import java.time.Instant
 
 class MainViewModel : ViewModel() {
+    var udpListenerService: UdpListenerService? = null
+
     private val _alarms = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarms.asStateFlow()
 
     fun setAlarms(alarms: Map<Int, AlertData>) {
         _alarms.value = alarms
+    }
+
+    fun ackAlarm(alarmId: Int) {
+        udpListenerService?.ackAlarm(alarmId)
     }
 }
 
@@ -76,6 +87,7 @@ class MainActivity : ComponentActivity() {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as UdpListenerService.LocalBinder
             udpListenerService = binder.getService()
+            mainViewModel.udpListenerService = udpListenerService
             lifecycle.coroutineScope.launch {
                 udpListenerService?.alarms?.collect { alarms ->
                     mainViewModel.setAlarms(alarms)
@@ -85,6 +97,7 @@ class MainActivity : ComponentActivity() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             udpListenerService = null
+            mainViewModel.udpListenerService = null
         }
     }
 
@@ -143,7 +156,7 @@ fun MainScreen(navController: NavController, viewModel: MainViewModel, settingsD
         topBar = {
             TopAppBar(
                 title = {
-                            Column() {
+                            Column {
                                 Text(friendlyName)
                                 Text(loginName)
                             }
@@ -160,15 +173,38 @@ fun MainScreen(navController: NavController, viewModel: MainViewModel, settingsD
         }
     ) { innerPadding ->
         LazyColumn(modifier = Modifier.padding(innerPadding)) {
-            items(sortedAlarms) { (_, alert) ->
+            items(sortedAlarms) { (id, alert) ->
+                if (alert.isAcknowledged) {
+                    return@items
+                }
                 Card(modifier = Modifier
                     .border(2.dp,priorityToColor(alert.priority))
                     .padding(8.dp)
                     .fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Text(text = alert.sender, fontWeight = FontWeight.Bold)
-                        Text(text = alert.message)
-                        ElapsedTimeCounter(timestamp = alert.timestamp)
+                    Row (
+                        modifier = Modifier.fillMaxWidth().padding(8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(text = alert.sender, fontWeight = FontWeight.Bold)
+                            Text(text = alert.message)
+                            ElapsedTimeCounter(timestamp = alert.timestamp)
+                        }
+                        if (alert.isMaintenance) {
+                            IconButton(
+                                onClick = {
+                                    viewModel.ackAlarm(id)
+                                },
+                                modifier = Modifier.align(Alignment.CenterVertically)
+                            ) {
+                                Icon(
+                                    Check,
+                                    contentDescription = "Check",
+                                    tint = Color.Green,
+                                    modifier = Modifier.size(48.dp)
+                                )
+                            }
+                       }
                     }
                 }
             }

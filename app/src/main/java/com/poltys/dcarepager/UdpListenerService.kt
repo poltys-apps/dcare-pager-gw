@@ -49,13 +49,15 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
-class AlertData {
-    var delayedJob: Job? = null
-    var sender: String = ""
-    var message: String = ""
-    var priority: Int = 1 // 1..5, 1 being highest
-    var timestamp: Instant = Instant.now()
-}
+data class AlertData (
+   var delayedJob: Job? = null,
+    var sender: String = "",
+    var message: String = "",
+    var priority: Int = 1, // 1..5, 1 being highest
+    var timestamp: Instant = Instant.now(),
+    var isMaintenance: Boolean = false,
+    var isAcknowledged: Boolean = false,
+)
 
 class UdpListenerService : Service() {
 
@@ -195,6 +197,13 @@ class UdpListenerService : Service() {
                 }
             }
         }
+    }
+
+    fun ackAlarm(alarmId: Int) {
+        val newAlarms = _alarmIds.value.toMutableMap()
+        newAlarms[alarmId] = newAlarms[alarmId]?.copy(isAcknowledged = true) ?: return
+        Log.i("UdpListenerService", "Alarm acknowledged: $alarmId")
+        _alarmIds.value = newAlarms
     }
 
     private fun getAlarmId(alarmIdStr: String): Int {
@@ -375,6 +384,20 @@ class UdpListenerService : Service() {
     }
 
     private fun notifyAlarm(alarmId: Int, alertData: AlertData) {
+        val newAlarms = _alarmIds.value.toMutableMap()
+        newAlarms[alarmId] = AlertData().apply {
+            this.sender = alertData.sender
+            this.message = alertData.message
+            this.priority = alertData.priority
+            this.timestamp = alertData.timestamp
+        }
+        _alarmIds.value = newAlarms
+
+        if (alertData.isMaintenance) {
+            // no notification for maintenance alarms
+            return
+        }
+
         val notificationManager =
             getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         val notification = NotificationCompat.Builder(
@@ -385,15 +408,6 @@ class UdpListenerService : Service() {
             .setContentText(alertData.message)
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
-        val newAlarms = _alarmIds.value.toMutableMap()
-        newAlarms[alarmId] = AlertData().apply {
-            this.sender = alertData.sender
-            this.message = alertData.message
-            this.priority = alertData.priority
-            this.timestamp = alertData.timestamp
-        }
-        _alarmIds.value = newAlarms
-
         notificationManager.notify(alarmId, notification)
         if (!silentNotification)
             lastNotificationTime = System.currentTimeMillis()
@@ -654,7 +668,8 @@ class UdpListenerService : Service() {
             val timestampStr = alertData.optString("timestamp")
             val timestamp = parseTimestamp(timestampStr).plusMillis(clockOffset)
             val delay = manageProfiles(alertData) ?: return
-            if (delay > 0) {
+            val isMaintenance = alertData.optBoolean("is_maintenance", false)
+            if (delay > 0 && !isMaintenance) {
                 val delayedTimestamp = timestamp.plusSeconds(delay.toLong())
                 val delayToTrigger = Duration.between(Instant.now(), delayedTimestamp).toMillis()
                 addDelayedAlarm(alarmId, AlertData().apply {
@@ -669,13 +684,14 @@ class UdpListenerService : Service() {
             } else {
                 Log.i(
                     "UdpListenerService",
-                    "[$alarmIdStr:$alarmId] Notify Sender: $sender, Message: $message, seqNo: $seqNo $timestamp"
+                    "[$alarmIdStr:$alarmId] Notify Sender: $sender, Message: $message, seqNo: $seqNo $timestamp Maintenance: $isMaintenance"
                 )
                 notifyAlarm(alarmId, AlertData().apply {
                     this.sender = sender
                     this.message = message
                     this.priority = priority
                     this.timestamp = timestamp
+                    this.isMaintenance = isMaintenance
                 })
             }
 
