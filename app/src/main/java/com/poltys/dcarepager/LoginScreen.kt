@@ -41,8 +41,6 @@ fun LoginScreen(navController: NavHostController, settingsDataStore: SettingsDat
     val loginPin by settingsDataStore.loginPinFlow.collectAsState(initial = "")
     var newLoginPin by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
-    var loginName = ""
-
 
     LaunchedEffect(loginPin) {
         newLoginPin = loginPin
@@ -96,7 +94,8 @@ fun LoginScreen(navController: NavHostController, settingsDataStore: SettingsDat
                                     if (signIns.length() == 0) {
                                         errorMessage = "Invalid PIN. Please try again."
                                     }
-                                    loginName = (signIns[0] as JSONObject).getString("username")
+                                    val loginName = (signIns[0] as JSONObject).getString("username")
+                                    settingsDataStore.saveLoginName(loginName)
                                 }
                             }
                         } catch (e: Exception) {

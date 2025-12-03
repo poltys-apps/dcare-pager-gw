@@ -87,8 +87,6 @@ class UdpListenerService : Service() {
     private var connectionJob: Job? = null
     private var loginPIN: String? = null
     private var syncLoginTime: Instant? = null
-    private val _loginName = MutableStateFlow("Logged Out")
-    val loginName: StateFlow<String> = _loginName.asStateFlow()
     private var syncAlarmList = true
 
     private var delayedAlarms: MutableMap<Int, AlertData> = mutableMapOf()
@@ -214,7 +212,7 @@ class UdpListenerService : Service() {
         return alarmId
     }
 
-    private fun syncLoginData() {
+    private suspend fun syncLoginData() {
         if (loginPIN.isNullOrBlank() || (syncLoginTime != null && syncLoginTime!!.isAfter(Instant.now().minusSeconds(LOGIN_SYNC_TIME_SECONDS)))) {
             return
         }
@@ -246,7 +244,7 @@ class UdpListenerService : Service() {
                     for (key in profiles.keys()) {
                         profilesMap[key] = profiles.getString(key)
                     }
-                    _loginName.value = loginName
+                    settingsDataStore.saveLoginName(loginName)
                     escalateProfile = profilesMap
                     Log.i("UdpListenerService", "Login profile data: $escalateProfile for $loginPIN ($loginName)")
                 }

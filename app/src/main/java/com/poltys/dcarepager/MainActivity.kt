@@ -61,17 +61,10 @@ import java.time.Instant
 class MainViewModel : ViewModel() {
     private val _alarms = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarms.asStateFlow()
-    private val _loginName = MutableStateFlow("Logged Out")
-    val loginName: StateFlow<String> = _loginName.asStateFlow()
 
     fun setAlarms(alarms: Map<Int, AlertData>) {
         _alarms.value = alarms
     }
-
-    fun setLoginName(loginName: String) {
-        _loginName.value = loginName
-    }
-
 }
 
 class MainActivity : ComponentActivity() {
@@ -88,12 +81,6 @@ class MainActivity : ComponentActivity() {
                     mainViewModel.setAlarms(alarms)
                 }
             }
-            lifecycle.coroutineScope.launch {
-                udpListenerService?.loginName?.collect { loginName ->
-                    mainViewModel.setLoginName(loginName)
-                }
-            }
-
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -146,7 +133,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(navController: NavController, viewModel: MainViewModel, settingsDataStore: SettingsDataStore) {
     val alarms by viewModel.alarms.collectAsState()
-    val loginName by viewModel.loginName.collectAsState()
+    val loginName by settingsDataStore.loginNameFlow.collectAsState(initial = "Logged Out")
     val friendlyName by settingsDataStore.friendlyNameFlow.collectAsState(initial = "")
 
     val sortedAlarms = alarms.toList().sortedWith(compareByDescending<Pair<Int, AlertData>> { it.second.priority }.thenBy { it.second.timestamp })
