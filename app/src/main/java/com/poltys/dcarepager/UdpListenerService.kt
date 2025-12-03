@@ -385,12 +385,7 @@ class UdpListenerService : Service() {
 
     private fun notifyAlarm(alarmId: Int, alertData: AlertData) {
         val newAlarms = _alarmIds.value.toMutableMap()
-        newAlarms[alarmId] = AlertData().apply {
-            this.sender = alertData.sender
-            this.message = alertData.message
-            this.priority = alertData.priority
-            this.timestamp = alertData.timestamp
-        }
+        newAlarms[alarmId] = alertData
         _alarmIds.value = newAlarms
 
         if (alertData.isMaintenance) {
