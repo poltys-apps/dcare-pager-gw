@@ -4,9 +4,12 @@
     <string name="udp_listener_content_title">DCare Pager Notifications</string>
     <string name="udp_listener_connected">Connected to Proxy Server</string>
     <string name="udp_listener_not_connected">Disconnected from Proxy Server</string>
-    <string name="friendly_name">Friendly Name of this Phone</string>
+    <string name="friendly_name">Unique Name of this Phone</string>
     <string name="has_alarms_content_title">DCare Alarms</string>
     <string name="has_alarms_content_text">You have active alarms</string>
     <string name="silent_notification">Silent Alarm Notifications</string>
     <string name="dcc_login_pin">PIN</string>
+    <string name="enable_login_mode">Enable Login Mode</string>
+    <string name="note_enable_login">NOTE: Enable Login only if was configured on the DCC Proxy Server.</string>
+    <string name="note_silent_alarms">Silent alarms will leave active only the sound notifying there are some active alarms.</string>
 </resources>

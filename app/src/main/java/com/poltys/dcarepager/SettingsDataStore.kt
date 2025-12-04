@@ -32,6 +32,7 @@ class SettingsDataStore(context: Context) {
         val SILENT_NOTIFICATION = booleanPreferencesKey("silent_notification")
         val LOGIN_PIN = stringPreferencesKey("login_pin")
         val LOGIN_NAME = stringPreferencesKey("login_name")
+        val LOGIN_ENABLED = booleanPreferencesKey("login_enabled")
     }
 
     val destinationAddressFlow: Flow<String> = dataStore.data
@@ -86,6 +87,17 @@ class SettingsDataStore(context: Context) {
     suspend fun saveLoginName(loginName: String) {
         dataStore.edit {
             it[PreferencesKeys.LOGIN_NAME] = loginName
+        }
+    }
+
+    val loginEnabledFlow: Flow<Boolean> = dataStore.data
+        .map {
+            it[PreferencesKeys.LOGIN_ENABLED] ?: false
+        }
+
+    suspend fun saveLoginEnabled(loginEnabled: Boolean) {
+        dataStore.edit {
+            it[PreferencesKeys.LOGIN_ENABLED] = loginEnabled
         }
     }
 }

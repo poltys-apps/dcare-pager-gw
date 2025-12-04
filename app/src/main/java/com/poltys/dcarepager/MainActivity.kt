@@ -68,9 +68,15 @@ class MainViewModel : ViewModel() {
 
     private val _alarms = MutableStateFlow<Map<Int, AlertData>>(emptyMap())
     val alarms: StateFlow<Map<Int, AlertData>> = _alarms.asStateFlow()
+    private val _registerError = MutableStateFlow<String?>(null)
+    val registerError: StateFlow<String?> = _registerError
 
     fun setAlarms(alarms: Map<Int, AlertData>) {
         _alarms.value = alarms
+    }
+
+    fun setRegisterError(error: String?) {
+        _registerError.value = error
     }
 
     fun ackAlarm(alarmId: Int) {
@@ -91,6 +97,11 @@ class MainActivity : ComponentActivity() {
             lifecycle.coroutineScope.launch {
                 udpListenerService?.alarms?.collect { alarms ->
                     mainViewModel.setAlarms(alarms)
+                }
+            }
+            lifecycle.coroutineScope.launch {
+                udpListenerService?.registerError?.collect { error ->
+                    mainViewModel.setRegisterError(error)
                 }
             }
         }
@@ -148,6 +159,9 @@ fun MainScreen(navController: NavController, viewModel: MainViewModel, settingsD
     val alarms by viewModel.alarms.collectAsState()
     val loginName by settingsDataStore.loginNameFlow.collectAsState(initial = "Logged Out")
     val friendlyName by settingsDataStore.friendlyNameFlow.collectAsState(initial = "")
+    val loginEnabled by settingsDataStore.loginEnabledFlow.collectAsState(initial = false)
+    val registerError by viewModel.registerError.collectAsState()
+
 
     val sortedAlarms = alarms.toList().sortedWith(compareByDescending<Pair<Int, AlertData>> { it.second.priority }.thenBy { it.second.timestamp })
 
@@ -158,53 +172,62 @@ fun MainScreen(navController: NavController, viewModel: MainViewModel, settingsD
                 title = {
                             Column {
                                 Text(friendlyName)
-                                Text(loginName)
+                                if (loginEnabled)
+                                    Text(loginName)
                             }
                         },
                 actions = {
                     IconButton(onClick = { navController.navigate("settings") }) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
                     }
-                    IconButton(onClick = { navController.navigate("login") }) {
-                        Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Login")
+                    if (loginEnabled) {
+                        IconButton(onClick = { navController.navigate("login") }) {
+                            Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Login")
+                        }
                     }
                 }
             )
         }
     ) { innerPadding ->
-        LazyColumn(modifier = Modifier.padding(innerPadding)) {
-            items(sortedAlarms) { (id, alert) ->
-                if (alert.isAcknowledged) {
-                    return@items
-                }
-                Card(modifier = Modifier
-                    .border(2.dp,priorityToColor(alert.priority))
-                    .padding(8.dp)
-                    .fillMaxWidth()) {
-                    Row (
-                        modifier = Modifier.fillMaxWidth().padding(8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+        if (registerError != null) {
+            Text(text = registerError!!, color = Color.Red, modifier = Modifier.padding(innerPadding))
+        } else {
+            LazyColumn(modifier = Modifier.padding(innerPadding)) {
+                items(sortedAlarms) { (id, alert) ->
+                    if (alert.isAcknowledged) {
+                        return@items
+                    }
+                    Card(
+                        modifier = Modifier
+                            .border(2.dp, priorityToColor(alert.priority))
+                            .padding(8.dp)
+                            .fillMaxWidth()
                     ) {
-                        Column {
-                            Text(text = alert.sender, fontWeight = FontWeight.Bold)
-                            Text(text = alert.message)
-                            ElapsedTimeCounter(timestamp = alert.timestamp)
-                        }
-                        if (alert.isMaintenance) {
-                            IconButton(
-                                onClick = {
-                                    viewModel.ackAlarm(id)
-                                },
-                                modifier = Modifier.align(Alignment.CenterVertically)
-                            ) {
-                                Icon(
-                                    Check,
-                                    contentDescription = "Check",
-                                    tint = Color.Green,
-                                    modifier = Modifier.size(48.dp)
-                                )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(text = alert.sender, fontWeight = FontWeight.Bold)
+                                Text(text = alert.message)
+                                ElapsedTimeCounter(timestamp = alert.timestamp)
                             }
-                       }
+                            if (alert.isMaintenance) {
+                                IconButton(
+                                    onClick = {
+                                        viewModel.ackAlarm(id)
+                                    },
+                                    modifier = Modifier.align(Alignment.CenterVertically)
+                                ) {
+                                    Icon(
+                                        Check,
+                                        contentDescription = "Check",
+                                        tint = Color.Green,
+                                        modifier = Modifier.size(48.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

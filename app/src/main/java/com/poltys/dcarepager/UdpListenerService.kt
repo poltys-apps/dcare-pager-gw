@@ -107,6 +107,9 @@ class UdpListenerService : Service() {
     private var clockOffset: Long = 0
     private var silentNotification: Boolean = false
     private var escalateProfile: Map<String, String> = emptyMap()
+    private val _registerError: MutableStateFlow<String?> = MutableStateFlow(null)
+    val registerError: StateFlow<String?> = _registerError
+    private var lastRegisterSeqNo: Int = 0
 
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -204,6 +207,15 @@ class UdpListenerService : Service() {
         newAlarms[alarmId] = newAlarms[alarmId]?.copy(isAcknowledged = true) ?: return
         Log.i("UdpListenerService", "Alarm acknowledged: $alarmId")
         _alarmIds.value = newAlarms
+    }
+
+    private fun hasNotAckAlarms(): Boolean {
+        _alarmIds.value.forEach { (_, alarmData) ->
+            if (!alarmData.isAcknowledged) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun getAlarmId(alarmIdStr: String): Int {
@@ -432,9 +444,13 @@ class UdpListenerService : Service() {
 
                 if (registerTime == null || registerTime!!.isBefore(Instant.now().minusSeconds(30))) {
                     registerTime = Instant.now()
-                    Log.v("UdpListenerService", "Sending register and logs")
                     localSeqNo += 1
-                    sendMessage("""{"Register":{"seq_no":$localSeqNo,"friendly_name":"$friendlyName"}}""")
+                    lastRegisterSeqNo = localSeqNo
+                    Log.v("UdpListenerService", "Sending register: $localSeqNo")
+                    if (loginPIN.isNullOrBlank())
+                        sendMessage("""{"Register":{"seq_no":$localSeqNo,"friendly_name":"$friendlyName"}}""")
+                    else
+                        sendMessage("""{"Register":{"seq_no":$localSeqNo,"friendly_name":"$friendlyName","pin":"$loginPIN"}}""")
 
                     val logs = AppLog.getAndClear()
                     if (!initializing && logs.isNotEmpty()) {
@@ -553,7 +569,10 @@ class UdpListenerService : Service() {
                         sendMessage("""{"Ack":$seqNo}""")
                         val timestamp = parseTimestamp(alertData.optString("timestamp"))
                         if (lastSyncTimestamp != null && timestamp.isBefore(lastSyncTimestamp)) {
-                            Log.v("UdpListenerService", "Ignore Retransmit Alert timestamp: $timestamp")
+                            Log.v(
+                                "UdpListenerService",
+                                "Ignore Retransmit Alert timestamp: $timestamp"
+                            )
                             continue
                         }
                         Log.d("UdpListenerService", "Received Retransmit Alert JSON: $alertData")
@@ -616,13 +635,27 @@ class UdpListenerService : Service() {
                 for ((_, alarmData) in armedAlerts) {
                     processAlertData(alarmData)
                 }
+            } else if (jsonObject.has("Nack")) {
+                Log.w("UdpListenerService", "Received Nack JSON: $jsonString")
+                val nackObj = jsonObject.getJSONObject("Nack")
+                val seqNo = nackObj.optInt("seq_no", 0)
+                if (seqNo == lastRegisterSeqNo) {
+                    _registerError.value =
+                        "Register Failed. " + nackObj.optString("reason", "Unknown reason")
+                }
+            } else if (jsonObject.has("Ack")) {
+                val seq_no = jsonObject.optInt("Ack", 0)
+                Log.v("UdpListenerService", "Received Ack: $seq_no")
+                if (seq_no == lastRegisterSeqNo) {
+                    _registerError.value = null
+                }
             } else {
-                Log.v("UdpListenerService", "Received JSON: $jsonString")
+                // Log.v("UdpListenerService", "Received Other JSON: $jsonString")
             }
         } catch (e: JSONException) {
             Log.e("UdpListenerService", "Error parsing JSON", e)
         }
-        if (!alarms.value.isEmpty() && System.currentTimeMillis() - lastNotificationTime > 60_000 ) {
+        if (hasNotAckAlarms() && System.currentTimeMillis() - lastNotificationTime > 60_000 ) {
             val notificationManager =
                 getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val notification = NotificationCompat.Builder(this, HAS_ALARMS_CHANNEL_ID)

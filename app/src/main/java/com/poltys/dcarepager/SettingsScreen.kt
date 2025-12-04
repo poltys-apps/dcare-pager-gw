@@ -1,8 +1,10 @@
 package com.poltys.dcarepager
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -33,11 +35,15 @@ fun SettingsScreen(navController: NavHostController, settingsDataStore: Settings
     val destinationAddress by settingsDataStore.destinationAddressFlow.collectAsState(initial = "")
     val friendlyName by settingsDataStore.friendlyNameFlow.collectAsState(initial = "")
     val silentNotification by settingsDataStore.silentNotificationFlow.collectAsState(initial = false)
+    val loginEnabled by settingsDataStore.loginEnabledFlow.collectAsState(initial = false)
+
 
     // These hold the current state of the TextFields
     var newDestinationAddress by remember { mutableStateOf("") }
     var newFriendlyName by remember { mutableStateOf("") }
     var newSilentNotification by remember { mutableStateOf(false) }
+    var newLoginEnabled by remember { mutableStateOf(false) }
+
 
 
     // Synchronizes the TextField state when the DataStore values first load.
@@ -59,7 +65,9 @@ fun SettingsScreen(navController: NavHostController, settingsDataStore: Settings
         },
         modifier = Modifier.fillMaxSize()
     ) { innerPadding ->
-        Column(modifier = Modifier.padding(innerPadding).padding(16.dp)) {
+        Column(modifier = Modifier
+            .padding(innerPadding)
+            .padding(16.dp)) {
             TextField(
                 value = newDestinationAddress,
                 onValueChange = { newDestinationAddress = it },
@@ -70,19 +78,39 @@ fun SettingsScreen(navController: NavHostController, settingsDataStore: Settings
                 onValueChange = { newFriendlyName = it },
                 label = { Text(stringResource(R.string.friendly_name)) }
             )
-            Row (modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row (modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Text(stringResource(R.string.silent_notification))
                 Checkbox(
                     checked = newSilentNotification,
                     onCheckedChange = { newSilentNotification = it },
                 )
             }
+            Text(stringResource(R.string.note_silent_alarms))
+            Row (modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(stringResource(R.string.enable_login_mode))
+                Checkbox(
+                    checked = newLoginEnabled,
+                    onCheckedChange = { newLoginEnabled = it },
+                )
+            }
+            Text(stringResource(R.string.note_enable_login))
 
             Button(onClick = {
                 scope.launch {
                     settingsDataStore.saveDestinationAddress(newDestinationAddress)
                     settingsDataStore.saveFriendlyName(newFriendlyName)
                     settingsDataStore.saveSilentNotification(newSilentNotification)
+                    settingsDataStore.saveLoginEnabled(newLoginEnabled)
                     // Navigate back after saving
                     navController.navigateUp()
                 }
